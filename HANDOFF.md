@@ -181,6 +181,34 @@ Reads — open; a group id or invite is the capability:
   hidden too, unless they belong to a reply chain, in which case they stay as a
   collapsed "Muted message" the reader can reveal, and reply previews pointing
   at them read "Muted". Mutes do not follow the account to another browser.
+  A tapped reveal lives in `revealed` and is **cleared whenever the mute list
+  changes**, so unmuting someone and muting them again re-hides everything.
+  Without that reset a stale reveal makes a re-muted author look unmuted —
+  muted "not working" — so keep the `muteStamp` effect in `GeneralChat`.
+- Read marks are **client-side only** too — `localStorage` key
+  `cc_seen:<gid>:<meKey>` (`getSeen`/`markSeen`). A missing mark falls back to
+  the viewer's `joinedAt`, so history from before they arrived is never unread.
+  `Home` counts `!system && author !== me && ts > seen` per community and polls
+  every 4 s; `excerptOf`/`previewOf` build the one-line "who: what" preview. The
+  count renders as `S.badge` (`data-role="unread-badge"`) on the right of the
+  community card.
+- Opening a room lands on the **first unseen message**: `GeneralChat` freezes
+  the read mark for the visit (`openSeen`), scrolls to the first message from
+  someone else newer than it, flashes it, marks the newest message seen, and
+  exposes the anchor as `data-unread-anchor` on the feed. From then on new
+  messages only auto-scroll when the reader is already at the bottom
+  (`atBottom` from the feed's `onScroll`). The floating arrow
+  (`data-role="scroll-down"`, `S.scrollDown`) appears while an anchor or unseen
+  content exists and jumps back to the newest messages.
+- Every bubble ends with a Telegram-style timestamp in its bottom-right corner
+  (`data-role="msg-stamp"`, `S.stamp`): `fmtStamp` formats the date and time in
+  `America/New_York` and appends a literal `EST`, as requested. The bubble
+  header no longer repeats the time — search results, thread items and forum
+  posts still use `fmtTime`.
+- Enter activates a screen's primary button. `onEnter(fn)` wraps the handler for
+  the login key, the create-community name, the join code, the username picker
+  and the change-username dialog; the handlers themselves guard on emptiness and
+  `busy`, so Enter and the (disabled) button behave identically.
 - General-chat bubbles are Telegram-style and deliberately use **exactly two
   message colors**: the viewer's own (`bubbleMine`, `#123f38`) and everybody
   else's (`bubble`, `PANEL2`). Own bubbles align right, others left, both at
@@ -202,7 +230,7 @@ Reads — open; a group id or invite is the capability:
   (`right: 4`) for own bubbles and `S.menuTheirs` (`left: 4`) for other people's,
   so the menu always grows inward.
 - After changing any file in `public/`, **bump `CACHE` in `public/sw.js`**
-  (currently `commons-v8`; go to `commons-v9`, …) so installed clients drop the
+  (currently `commons-v9`; go to `commons-v10`, …) so installed clients drop the
   old shell. The worker is network-first now, so the bump mainly guarantees
   eviction.
 
