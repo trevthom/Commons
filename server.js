@@ -146,7 +146,7 @@ const server = http.createServer(async (req, res) => {
       const id = newGroupId();
       const g = { id, name, createdAt: now(), ownerKey: key, admins: [key],
         members: { [key]: { username: null, joinedAt: now(), lastNameChange: 0 } },
-        usernames: {}, banned: [], invite: newInvite() };
+        usernames: {}, banned: [], invite: newInvite(), inviteOnce: null };
       store[groupKey(id)] = g; persist();
       sendJSON(res, 200, { ok: true, group: g });
     });
@@ -156,16 +156,36 @@ const server = http.createServer(async (req, res) => {
     const body = await readBody(req); const key = normKey(body.key); const code = String(body.code || "").trim();
     return atomic(() => {
       if (!store[acctKey(key)]) return sendJSON(res, 200, { ok: false, error: "invalid-key" });
-      let g = null;
+      let g = null, onceUsed = false;
       for (const k of Object.keys(store)) {
         if (!isGroupKey(k)) continue;
         const gg = store[k];
+        // gg.id (the raw group id) and gg.invite are reusable; gg.inviteOnce is
+        // a single-use code that is spent the moment one person joins with it.
         if (gg.id === code || gg.invite === code) { g = gg; break; }
+        if (gg.inviteOnce && gg.inviteOnce === code) { g = gg; onceUsed = true; break; }
       }
       if (!g) return sendJSON(res, 200, { ok: false, error: "not-found" });
       if ((g.banned || []).includes(key)) return sendJSON(res, 200, { ok: false, error: "banned" });
-      if (!g.members[key]) { g.members[key] = { username: null, joinedAt: now(), lastNameChange: 0 }; persist(); }
+      if (!g.members[key]) {
+        g.members[key] = { username: null, joinedAt: now(), lastNameChange: 0 };
+        if (onceUsed) g.inviteOnce = null;   // burn the one-time code
+        persist();
+      }
       sendJSON(res, 200, { ok: true, group: g });
+    });
+  }
+
+  // Mint (or rotate) the group's one-time invite. Any member can hand one out;
+  // the previous unused code is replaced the moment a new one is generated.
+  if (p === "/api/group/invite" && req.method === "POST") {
+    const body = await readBody(req); const key = normKey(body.key); const gid = body.gid;
+    return atomic(() => {
+      const g = store[groupKey(gid)];
+      if (!g) return sendJSON(res, 200, { ok: false, error: "not-found" });
+      if (!g.members[key]) return sendJSON(res, 200, { ok: false, error: "not-member" });
+      g.inviteOnce = newInvite(); persist();
+      sendJSON(res, 200, { ok: true, code: g.inviteOnce, group: g });
     });
   }
 

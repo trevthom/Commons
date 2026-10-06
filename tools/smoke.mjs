@@ -61,6 +61,29 @@ const get = async (path) => {
   const joined = await post("/api/group/join", { key: memberKey, code: invite });
   ok("second account joins by invite code", joined.json && joined.json.ok && !!joined.json.group.members[memberKey]);
 
+  // --- invites: indefinite vs one-time ---
+  const outsider = await post("/api/account/create", {});
+  const outsiderKey = outsider.json.key;
+  const deniedInvite = await post("/api/group/invite", { key: outsiderKey, gid });
+  ok("a non-member cannot mint an invite", deniedInvite.json && deniedInvite.json.ok === false);
+
+  const minted = await post("/api/group/invite", { key: ownerKey, gid });
+  ok("a member can mint a one-time code", minted.json && minted.json.ok && typeof minted.json.code === "string" && minted.json.code.length >= 8);
+  const onceCode = minted.json.code;
+  ok("the one-time code differs from the indefinite one", onceCode !== invite);
+
+  const onceJoin = await post("/api/group/join", { key: outsiderKey, code: onceCode });
+  ok("the one-time code lets exactly one account in", onceJoin.json && onceJoin.json.ok && !!onceJoin.json.group.members[outsiderKey]);
+  const spent = await get(`/api/get?key=${encodeURIComponent("group:" + gid)}`);
+  ok("the one-time code is spent after that join", spent.json && spent.json.value.inviteOnce === null);
+
+  const gateCrasher = await post("/api/account/create", {});
+  const gateCrasherKey = gateCrasher.json.key;
+  const reuse = await post("/api/group/join", { key: gateCrasherKey, code: onceCode });
+  ok("a spent one-time code no longer works", reuse.json && reuse.json.error === "not-found");
+  const reusableAgain = await post("/api/group/join", { key: gateCrasherKey, code: invite });
+  ok("the indefinite code keeps working", reusableAgain.json && reusableAgain.json.ok);
+
   // --- messaging via generic KV + batch read ---
   const msgKey = `msg:${gid}:general:1:smoke`;
   const wrote = await post("/api/set", { key: msgKey, value: { id: "smoke", ts: 1, text: "hi", author: memberKey, gid } });
