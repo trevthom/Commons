@@ -26,7 +26,7 @@ Any instructions elsewhere describing TanStack Start, Vite, Convex, or shadcn
 | `public/sw.js` | Service worker (app-shell cache). |
 | `public/*.min.js`, `lucide.js`, `qrcode.min.js` | Vendored libraries. Do not hand-edit. |
 | `tools/smoke.mjs` | Dependency-free API test (needs a running server). |
-| `tools/render-test.mjs` | Loads the real page in jsdom and drives sign-up, community creation, message search, and the Forum tab. |
+| `tools/render-test.mjs` | Loads the real page in jsdom and drives sign-up, community creation, invites, message search, the message menu, replies, muting, and the Forum tab. |
 | `data.json` | Runtime database. **Never commit** (gitignored). |
 
 ## Build & run
@@ -60,12 +60,23 @@ with `freebuff-preview start`.
 | Key pattern | Value |
 | --- | --- |
 | `account:<16-char key>` | `{ key, createdAt, sessionId }` — **the login credential itself** |
-| `group:<id>` | `{ id, name, createdAt, ownerKey, admins[], members{key:{username,joinedAt,lastNameChange}}, usernames{lowercased→key}, banned[], invite }` |
-| `msg:<gid>:general:<ts>:<uid>` | `{ id, ts, text, anon, author, authorName, gid }` (or `{ system:true, text }`) |
+| `group:<id>` | `{ id, name, createdAt, ownerKey, admins[], members{key:{username,joinedAt,lastNameChange}}, usernames{lowercased→key}, banned[], invite, inviteOnce }` |
+| `msg:<gid>:general:<ts>:<uid>` | `{ id, ts, text, anon, author, authorName, gid, replyTo? }` (or `{ system:true, text }`) |
 | `post:<gid>:<ts>:<uid>` | `{ id, ts, title, text, anon, author, authorName, gid, replies[] }` |
 
 Accounts are anonymous login keys; there is no email/password and no recovery.
 Logging in rotates `sessionId`, which invalidates other devices.
+
+Group invites come in two flavours: `invite` is the **indefinite** code (reusable
+forever) and `inviteOnce` is a **single-use** code that `server.js` nulls out as
+soon as one new member joins with it. `POST /api/group/invite` mints or rotates
+`inviteOnce`, so at most one unused one-time code exists per community.
+
+A message that replies to another carries
+`replyTo: { key, id, ts, author, authorName, excerpt }`. The excerpt is captured
+at send time, so the preview survives even if the parent is deleted — the client
+detects that by looking for `replyTo.key` in the loaded messages and shows
+`Deleted` instead.
 
 ## API reference (`server.js`)
 
@@ -78,7 +89,8 @@ Accounts / sessions:
 Groups:
 
 - `POST /api/group/create` `{ key, name }` → `{ ok, group }`
-- `POST /api/group/join` `{ key, code }` (code = group id or invite) → `{ ok, group }`
+- `POST /api/group/join` `{ key, code }` (code = group id, reusable `invite`, or one-time `inviteOnce`) → `{ ok, group }`
+- `POST /api/group/invite` `{ key, gid }` — any member; mints/rotates `inviteOnce` (single use)
 - `POST /api/group/claimname` `{ key, gid, username }` → first claim wins; renames have a 60-day cooldown
 - `POST /api/group/remove` `{ key, gid, targetKey }` — admin/owner; non-permanent (may rejoin)
 - `POST /api/group/toggleadmin` `{ key, gid, targetKey }` — **owner only**
@@ -122,9 +134,32 @@ Generic content KV (messages and posts only):
   community.
 - `GeneralChat` has client-side message search (`query`/`shown`); it filters the
   already-loaded messages, so no server support is needed.
+- Every General bubble has a ⋮ menu (`MsgMenu`): **Reply**, **View message
+  thread** (only when the message is part of a chain), **Mute/Unmute user**
+  (hidden on your own messages), and **Delete message** (your own; admins keep
+  the ability to delete any). Menu items close the menu before acting.
+- Replies render a Telegram-style preview above the text (`ReplyPreview`), and
+  `ThreadModal` shows the whole chain (root + every descendant) with a composer
+  that replies to the root.
+- Mutes are **client-side only** — `localStorage` key `cc_mutes:<gid>:<meKey>`
+  read through `useMutes` in `GroupApp` and passed to `GeneralChat`/`Forum`. A
+  muted author's forum posts are filtered out; their General messages are
+  hidden too, unless they belong to a reply chain, in which case they stay as a
+  collapsed "Muted message" the reader can reveal, and reply previews pointing
+  at them read "Muted". Mutes do not follow the account to another browser.
+- General-chat bubbles are Telegram-style and deliberately use **exactly two
+  message colors**: the viewer's own (`bubbleMine`, `#123f38`) and everybody
+  else's (`bubble`, `PANEL2`). Own bubbles align right, others left, both at
+  `maxWidth: 92%` with a small radius on the "tail" corner. Sender names all use
+  the single `SENDER` color, and anonymity is signalled by the eye-off icon plus
+  the "Anon …" label rather than by a different name color — keep it that way
+  when touching bubble styles.
+- The Invite modal has two tabs: **Indefinite link** (`group.invite`) and
+  **One-time link** (`group.inviteOnce`, with a button to generate/rotate it).
 - After changing any file in `public/`, **bump `CACHE` in `public/sw.js`**
-  (`commons-v2` → `commons-v3`, …) so installed clients drop the old shell. The
-  worker is network-first now, so the bump mainly guarantees eviction.
+  (currently `commons-v5`; go to `commons-v6`, …) so installed clients drop the
+  old shell. The worker is network-first now, so the bump mainly guarantees
+  eviction.
 
 ## Known issues / where to go next
 
@@ -140,7 +175,9 @@ Generic content KV (messages and posts only):
 3. **No rate limiting** on `/api/account/create`, `/api/account/login`, or
    `/api/group/join`.
 4. **Group ids are short** (10 hex chars) and are accepted as join codes; only
-   the invite code is meant to be shared. Consider requiring `invite` for joins.
+   invite codes are meant to be shared. Consider requiring an invite to join.
+   Also, one-time invites are a single slot (`inviteOnce`), so generating a new
+   one invalidates the previous unused one; a per-creator list would fix that.
 5. **Polling** rather than SSE/WebSocket — acceptable at this scale, but the
    obvious scaling step.
 6. `Access-Control-Allow-Origin: *` on the API. Harmless today because there are

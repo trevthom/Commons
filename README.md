@@ -1,6 +1,7 @@
 # Commons
 
-A group + neighborhood chat PWA. Accounts are anonymous login **keys** (no
+A community chat PWA: every community has a **General** chat and a **Forum** for
+bulletin-board posts. Accounts are anonymous login **keys** (no
 email/password). Usernames are chosen per community and reserved permanently.
 No private user-to-user messaging.
 
@@ -42,10 +43,29 @@ architecture, API reference, and known issues.
 - You can change your username **once every 60 days**; everyone in the
   community sees a note that your name changed.
 
+## Chat
+
+- Every message bubble has a **⋮ menu**: reply to it, view its **message
+  thread** (once it's part of a reply chain), mute its author, and — on your own
+  messages — delete it.
+- **Replies** show who you replied to plus a one-line preview of their message,
+  like Telegram. If that message is deleted later, the preview reads
+  "Deleted".
+- **Muting** a member hides their Forum posts and their messages in General for
+  you. If you mute someone whose message is part of a reply chain, it stays
+  collapsed behind a "Muted" placeholder you can tap to reveal. Mutes are kept
+  in your browser only.
+
 ## Anonymity
 
-Chosen **inside a community** (eye icon). Toggle a default for that community,
-or flip per message/post in the composer.
+Chosen **per message/post** with the eye button beside the composer. Anonymous
+labels ("Anon Cedar 42") are stable within a community.
+
+## Invites
+
+- **Indefinite link** — works any number of times.
+- **One-time link** — works exactly once, then stops. Generate a fresh one from
+  the invite screen whenever you need it.
 
 ## Moderation
 
