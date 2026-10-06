@@ -8,14 +8,54 @@ const crypto = require("crypto");
 const PORT = process.env.PORT || 8080;
 const PUBLIC = path.join(__dirname, "public");
 const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, "data.json");
+const MAX_BODY = 1e6; // 1 MB — reject absurd payloads before they hit memory
 
+// ===== STORE =====
+// Loading never destroys data: a file we cannot parse is moved aside rather
+// than silently replaced with an empty store.
 let store = {};
-try { store = JSON.parse(fs.readFileSync(DATA_FILE, "utf8")); } catch { store = {}; }
+try {
+  const parsed = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("expected a JSON object");
+  store = parsed;
+} catch (err) {
+  store = {};
+  if (err.code !== "ENOENT") {
+    console.error(`[commons] could not read ${DATA_FILE}: ${err.message}`);
+    try {
+      const aside = `${DATA_FILE}.corrupt-${Date.now()}`;
+      fs.renameSync(DATA_FILE, aside);
+      console.error(`[commons] moved the unreadable file to ${aside}; starting with an empty store`);
+    } catch {}
+  }
+}
+
+// Debounced, atomic persistence: write a temp file then rename it over the
+// real one, so a crash mid-write can never truncate data.json.
 let saveTimer = null;
+const writeNow = () => {
+  saveTimer = null;
+  const tmp = DATA_FILE + ".tmp";
+  fs.writeFile(tmp, JSON.stringify(store), (err) => {
+    if (err) return console.error("[commons] save failed:", err.message);
+    fs.rename(tmp, DATA_FILE, (e) => { if (e) console.error("[commons] save rename failed:", e.message); });
+  });
+};
 const persist = () => {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => fs.writeFile(DATA_FILE, JSON.stringify(store), () => {}), 100);
+  saveTimer = setTimeout(writeNow, 100);
 };
+// Flush pending writes on shutdown so the last messages aren't lost.
+const flush = () => {
+  if (!saveTimer) return;
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  try {
+    fs.writeFileSync(DATA_FILE + ".tmp", JSON.stringify(store));
+    fs.renameSync(DATA_FILE + ".tmp", DATA_FILE);
+  } catch {}
+};
+for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => { flush(); process.exit(0); });
 
 // serial mutex so claims/bans/logins can't race
 let chain = Promise.resolve();
@@ -30,6 +70,13 @@ const newKey = () => {
 // normalize any user-entered key: uppercase + strip everything but A-Z0-9
 const normKey = (k) => String(k || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 const newId = () => crypto.randomBytes(6).toString("hex");
+const newGroupId = () => crypto.randomBytes(5).toString("hex"); // 10 hex chars, URL-safe
+const newInvite = () => {
+  const a = "abcdefghjkmnpqrstuvwxyz23456789";
+  const b = crypto.randomBytes(12); let s = "";
+  for (let i = 0; i < 12; i++) s += a[b[i] % a.length];
+  return s;
+};
 const now = () => Date.now();
 const DAY = 86400000;
 
@@ -38,10 +85,24 @@ const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; cha
   ".svg": "image/svg+xml", ".ico": "image/x-icon", ".webmanifest": "application/manifest+json" };
 
 const sendJSON = (res, code, obj) => { res.writeHead(code, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }); res.end(JSON.stringify(obj)); };
-const readBody = (req) => new Promise((r) => { let d = ""; req.on("data", (c) => (d += c)); req.on("end", () => { try { r(JSON.parse(d || "{}")); } catch { r({}); } }); });
+const readBody = (req) => new Promise((r) => {
+  let d = ""; let done = false;
+  const finish = (v) => { if (!done) { done = true; r(v); } };
+  req.on("data", (c) => { d += c; if (d.length > MAX_BODY) finish({}); });
+  req.on("end", () => { try { finish(JSON.parse(d || "{}")); } catch { finish({}); } });
+  req.on("error", () => finish({}));
+});
 
 const acctKey = (k) => "account:" + k;
 const groupKey = (id) => "group:" + id;
+// Account records hold login keys and live session ids. They must never be
+// reachable through the generic KV endpoints, or /api/list would hand out
+// every account (and therefore every login) on the server.
+const isAccountKey = (k) => typeof k === "string" && k.startsWith("account:");
+const isGroupKey = (k) => typeof k === "string" && k.startsWith("group:");
+// The generic KV surface is only for content written by clients under a group:
+// messages and neighborhood posts. Groups are created/edited via /api/group/*.
+const isWritableKey = (k) => typeof k === "string" && (k.startsWith("msg:") || k.startsWith("post:"));
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -75,13 +136,32 @@ const server = http.createServer(async (req, res) => {
     return sendJSON(res, 200, { valid: !!a && a.sessionId === url.searchParams.get("sessionId") });
   }
 
-  // ===== GROUP MEMBERSHIP / NAMES / BANS =====
+  // ===== GROUPS =====
+  if (p === "/api/group/create" && req.method === "POST") {
+    const body = await readBody(req); const key = normKey(body.key);
+    const name = String(body.name || "").trim().slice(0, 40);
+    return atomic(() => {
+      if (!store[acctKey(key)]) return sendJSON(res, 200, { ok: false, error: "invalid-key" });
+      if (!name) return sendJSON(res, 200, { ok: false, error: "invalid-name" });
+      const id = newGroupId();
+      const g = { id, name, createdAt: now(), ownerKey: key, admins: [key],
+        members: { [key]: { username: null, joinedAt: now(), lastNameChange: 0 } },
+        usernames: {}, banned: [], invite: newInvite() };
+      store[groupKey(id)] = g; persist();
+      sendJSON(res, 200, { ok: true, group: g });
+    });
+  }
+
   if (p === "/api/group/join" && req.method === "POST") {
-    const body = await readBody(req); const key = normKey(body.key); const code = body.code;
+    const body = await readBody(req); const key = normKey(body.key); const code = String(body.code || "").trim();
     return atomic(() => {
       if (!store[acctKey(key)]) return sendJSON(res, 200, { ok: false, error: "invalid-key" });
       let g = null;
-      for (const k of Object.keys(store)) if (k.startsWith("group:")) { const gg = store[k]; if (gg.id === code || gg.invite === code) { g = gg; break; } }
+      for (const k of Object.keys(store)) {
+        if (!isGroupKey(k)) continue;
+        const gg = store[k];
+        if (gg.id === code || gg.invite === code) { g = gg; break; }
+      }
       if (!g) return sendJSON(res, 200, { ok: false, error: "not-found" });
       if ((g.banned || []).includes(key)) return sendJSON(res, 200, { ok: false, error: "banned" });
       if (!g.members[key]) { g.members[key] = { username: null, joinedAt: now(), lastNameChange: 0 }; persist(); }
@@ -116,6 +196,38 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
+  // Admin removes a member. Non-permanent: they may rejoin.
+  if (p === "/api/group/remove" && req.method === "POST") {
+    const body = await readBody(req); const key = normKey(body.key); const gid = body.gid; const targetKey = normKey(body.targetKey);
+    return atomic(() => {
+      const g = store[groupKey(gid)];
+      if (!g) return sendJSON(res, 200, { ok: false, error: "not-found" });
+      if (g.ownerKey !== key && !(g.admins || []).includes(key)) return sendJSON(res, 200, { ok: false, error: "not-admin" });
+      if (targetKey === g.ownerKey) return sendJSON(res, 200, { ok: false, error: "cant-remove-owner" });
+      delete g.members[targetKey];
+      g.admins = (g.admins || []).filter((k) => k !== targetKey);
+      persist();
+      sendJSON(res, 200, { ok: true, group: g });
+    });
+  }
+
+  // Admin/owner grants or revokes admin. Only the owner can appoint admins.
+  if (p === "/api/group/toggleadmin" && req.method === "POST") {
+    const body = await readBody(req); const key = normKey(body.key); const gid = body.gid; const targetKey = normKey(body.targetKey);
+    return atomic(() => {
+      const g = store[groupKey(gid)];
+      if (!g) return sendJSON(res, 200, { ok: false, error: "not-found" });
+      if (g.ownerKey !== key) return sendJSON(res, 200, { ok: false, error: "not-owner" });
+      if (targetKey === g.ownerKey) return sendJSON(res, 200, { ok: false, error: "cant-change-owner" });
+      if (!g.members[targetKey]) return sendJSON(res, 200, { ok: false, error: "not-member" });
+      g.admins = (g.admins || []).includes(targetKey)
+        ? g.admins.filter((k) => k !== targetKey)
+        : [...(g.admins || []), targetKey];
+      persist();
+      sendJSON(res, 200, { ok: true, group: g });
+    });
+  }
+
   if (p === "/api/group/ban" && req.method === "POST") {
     const body = await readBody(req); const ownerKey = normKey(body.ownerKey); const gid = body.gid; const targetKey = normKey(body.targetKey);
     return atomic(() => {
@@ -139,7 +251,6 @@ const server = http.createServer(async (req, res) => {
       if (!g) return sendJSON(res, 200, { ok: false, error: "not-found" });
       if (g.ownerKey !== ownerKey) return sendJSON(res, 200, { ok: false, error: "not-owner" });
       // remove the group doc + all its messages and neighborhood posts
-      const dead = [groupKey(gid), `msg:${gid}:`, `post:${gid}:`];
       for (const k of Object.keys(store)) {
         if (k === groupKey(gid) || k.startsWith(`msg:${gid}:`) || k.startsWith(`post:${gid}:`)) delete store[k];
       }
@@ -148,18 +259,53 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  // ===== GENERIC KV =====
-  if (p === "/api/get") { const key = url.searchParams.get("key"); return sendJSON(res, 200, key in store ? { key, value: store[key] } : null); }
-  if (p === "/api/set" && req.method === "POST") { const { key, value } = await readBody(req); if (!key) return sendJSON(res, 400, { error: "key required" }); store[key] = value; persist(); return sendJSON(res, 200, { key, value }); }
-  if (p === "/api/delete" && req.method === "POST") { const { key } = await readBody(req); const existed = key in store; delete store[key]; persist(); return sendJSON(res, 200, { key, deleted: existed }); }
-  if (p === "/api/list") { const prefix = url.searchParams.get("prefix") || ""; return sendJSON(res, 200, { keys: Object.keys(store).filter((k) => k.startsWith(prefix)), prefix }); }
+  // ===== GENERIC KV (message + post content only) =====
+  if (p === "/api/get") {
+    const key = url.searchParams.get("key");
+    if (isAccountKey(key)) return sendJSON(res, 403, { error: "forbidden" });
+    return sendJSON(res, 200, key in store ? { key, value: store[key] } : null);
+  }
+  if (p === "/api/mget") {
+    // Batch read: one request for a whole prefix (chat polls used to issue
+    // 1 + N requests per tick).
+    const prefix = url.searchParams.get("prefix") || "";
+    const items = [];
+    for (const k of Object.keys(store)) if (k.startsWith(prefix) && !isAccountKey(k)) items.push([k, store[k]]);
+    return sendJSON(res, 200, { prefix, items });
+  }
+  if (p === "/api/set" && req.method === "POST") {
+    const { key, value } = await readBody(req);
+    if (!key) return sendJSON(res, 400, { error: "key required" });
+    if (!isWritableKey(key)) return sendJSON(res, 403, { error: "forbidden" });
+    store[key] = value; persist();
+    return sendJSON(res, 200, { key, value });
+  }
+  if (p === "/api/delete" && req.method === "POST") {
+    const { key } = await readBody(req);
+    if (!isWritableKey(key)) return sendJSON(res, 403, { error: "forbidden" });
+    const existed = key in store; delete store[key]; persist();
+    return sendJSON(res, 200, { key, deleted: existed });
+  }
+  if (p === "/api/list") {
+    const prefix = url.searchParams.get("prefix") || "";
+    return sendJSON(res, 200, { keys: Object.keys(store).filter((k) => k.startsWith(prefix) && !isAccountKey(k)), prefix });
+  }
 
   // ===== STATIC =====
   let file = p === "/" ? "/index.html" : decodeURIComponent(p);
   let full = path.join(PUBLIC, file);
-  if (!full.startsWith(PUBLIC)) { res.writeHead(403); return res.end("forbidden"); }
+  if (full !== PUBLIC && !full.startsWith(PUBLIC + path.sep)) { res.writeHead(403); return res.end("forbidden"); }
   fs.readFile(full, (err, buf) => {
-    if (err) return fs.readFile(path.join(PUBLIC, "index.html"), (e2, html) => { if (e2) { res.writeHead(404); return res.end("not found"); } res.writeHead(200, { "Content-Type": MIME[".html"] }); res.end(html); });
+    if (err) {
+      // Only fall back to the app shell for navigations — a missing .js or .png
+      // must 404 rather than answer with HTML.
+      const ext = path.extname(full);
+      if (ext && ext !== ".html") { res.writeHead(404, { "Content-Type": "text/plain" }); return res.end("not found"); }
+      return fs.readFile(path.join(PUBLIC, "index.html"), (e2, html) => {
+        if (e2) { res.writeHead(404); return res.end("not found"); }
+        res.writeHead(200, { "Content-Type": MIME[".html"] }); res.end(html);
+      });
+    }
     res.writeHead(200, { "Content-Type": MIME[path.extname(full)] || "application/octet-stream" }); res.end(buf);
   });
 });

@@ -5,14 +5,22 @@ const {
 } = lucide;
 
 // ---------- API ----------
+// Every call resolves to a value or null — a dropped connection or a non-JSON
+// error page must never leave a button stuck in its "busy" state.
 const api = {
-  async post(path, body) { const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) }); return r.json(); },
-  async get(path) { const r = await fetch(path); return r.json(); },
+  async post(path, body) { try { const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) }); return await r.json(); } catch { return null; } },
+  async get(path) { try { const r = await fetch(path); return await r.json(); } catch { return null; } },
 };
-const sget = async (k) => { try { const j = await api.get("/api/get?key=" + encodeURIComponent(k)); return j ? j.value : null; } catch { return null; } };
-const sset = async (k, v) => { try { await api.post("/api/set", { key: k, value: v }); return true; } catch { return false; } };
-const sdelete = async (k) => { try { await api.post("/api/delete", { key: k }); return true; } catch { return false; } };
-const slist = async (prefix) => { try { const j = await api.get("/api/list?prefix=" + encodeURIComponent(prefix)); return j ? j.keys : []; } catch { return []; } };
+const sget = async (k) => { const j = await api.get("/api/get?key=" + encodeURIComponent(k)); return j ? j.value : null; };
+const sset = async (k, v) => !!(await api.post("/api/set", { key: k, value: v }));
+const sdelete = async (k) => !!(await api.post("/api/delete", { key: k }));
+const slist = async (prefix) => { const j = await api.get("/api/list?prefix=" + encodeURIComponent(prefix)); return j ? j.keys : []; };
+// Batch read: fetch every value under a prefix in a single request.
+const slistValues = async (prefix) => {
+  const j = await api.get("/api/mget?prefix=" + encodeURIComponent(prefix));
+  if (!j || !j.items) return [];
+  return j.items.map(([k, v]) => ({ ...v, _key: k }));
+};
 
 // ---------- session storage (cleared when browser/tab closes) ----------
 const SK = "cc_session_v2";
@@ -88,7 +96,7 @@ function CommunityChat() {
     <div style={S.root}>
       <style>{CSS}</style>
       {view === "loading" && <div style={S.center}><div className="pulse" style={{ fontSize: 40 }}>◇</div></div>}
-      {view === "login" && <Login kicked={kicked} clearKicked={() => setKicked(false)} onAuthed={(s) => { setSess(s); setView(pendingInvite ? "home" : "home"); }} />}
+      {view === "login" && <Login kicked={kicked} clearKicked={() => setKicked(false)} onAuthed={(s) => { setSess(s); setView("home"); }} />}
       {view === "home" && session && <Home session={session} pendingInvite={pendingInvite} clearInvite={() => setPendingInvite(null)} onOpen={(g) => { setGroup(g); setTab("general"); setView("app"); }} onLogout={() => { setSess(null); setView("login"); }} />}
       {view === "app" && group && session && <GroupApp session={session} group={group} setGroup={setGroup} tab={tab} setTab={setTab} onLeave={() => { setGroup(null); setView("home"); }} onLogout={() => { setSess(null); setGroup(null); setView("login"); }} />}
     </div>
@@ -169,21 +177,20 @@ function Home({ session, pendingInvite, clearInvite, onOpen, onLogout }) {
   const [newName, setNewName] = useState("");
 
   const refresh = useCallback(async () => {
-    const keys = await slist("group:");
-    const gs = [];
-    for (const k of keys) { const g = await sget(k); if (g && g.members && g.members[session.key] && !(g.banned || []).includes(session.key)) gs.push(g); }
+    const all = await slistValues("group:");
+    const gs = all.filter((g) => g && g.members && g.members[session.key] && !(g.banned || []).includes(session.key));
     gs.sort((a, b) => b.createdAt - a.createdAt);
     setGroups(gs);
   }, [session.key]);
   useEffect(() => { refresh(); }, [refresh]);
   useEffect(() => { if (pendingInvite) setJoining(true); }, [pendingInvite]);
 
+  // Groups are created server-side so a client can't hand itself ownership.
   const createGroup = async () => {
-    const id = uid();
-    const g = { id, name: newName.trim(), createdAt: now(), ownerKey: session.key, admins: [session.key],
-      members: { [session.key]: { username: null, joinedAt: now(), lastNameChange: 0 } }, usernames: {}, banned: [], invite: uid() + uid() };
-    await sset(groupKey(id), g);
-    setCreating(false); setNewName(""); refresh(); onOpen(g);
+    const name = newName.trim();
+    const r = await api.post("/api/group/create", { key: session.key, name });
+    if (!r || !r.ok) return;
+    setCreating(false); setNewName(""); refresh(); onOpen(r.group);
   };
 
   return (
@@ -203,7 +210,7 @@ function Home({ session, pendingInvite, clearInvite, onOpen, onLogout }) {
                 <div style={{ fontWeight: 600 }}>{g.name}</div>
                 <div style={S.muted}>{Object.keys(g.members).length} member(s){me && me.username ? " · " + me.username : " · pick a name"}</div>
               </div>
-              {g.ownerKey === session.key ? <Crown size={16} color="#fbbf24" /> : g.admins.includes(session.key) ? <Shield size={15} color="#7dd3fc" /> : null}
+              {g.ownerKey === session.key ? <Crown size={16} color="#fbbf24" /> : (g.admins || []).includes(session.key) ? <Shield size={15} color="#7dd3fc" /> : null}
             </button>
           );
         })}
@@ -356,8 +363,7 @@ function AnonToggle({ anon, setAnon }) {
 function useItems(prefix, ms = 2500) {
   const [items, setItems] = useState([]);
   const load = useCallback(async () => {
-    const keys = await slist(prefix); const all = [];
-    for (const k of keys) { const m = await sget(k); if (m) all.push({ ...m, _key: k }); }
+    const all = await slistValues(prefix);
     all.sort((a, b) => a.ts - b.ts); setItems(all);
   }, [prefix]);
   useEffect(() => { load(); const t = setInterval(load, ms); return () => clearInterval(t); }, [load, ms]);
@@ -491,18 +497,16 @@ function AdminModal({ session, group, isOwner, onClose, onChange, onDeleted }) {
     await api.post("/api/group/ban", { ownerKey: session.key, gid: group.id, targetKey });
     onChange();
   };
+  // Both actions are validated server-side; the client can't just rewrite the group doc.
   // admin (non-permanent) remove: just drop membership (can rejoin)
   const removeUser = async (targetKey) => {
     if (targetKey === group.ownerKey) return;
-    const g = await sget(groupKey(group.id));
-    delete g.members[targetKey];
-    g.admins = (g.admins || []).filter((a) => a !== targetKey);
-    await sset(groupKey(group.id), g); onChange();
+    await api.post("/api/group/remove", { key: session.key, gid: group.id, targetKey });
+    onChange();
   };
   const toggleAdmin = async (targetKey) => {
-    const g = await sget(groupKey(group.id));
-    g.admins = g.admins.includes(targetKey) ? g.admins.filter((a) => a !== targetKey) : [...g.admins, targetKey];
-    await sset(groupKey(group.id), g); onChange();
+    await api.post("/api/group/toggleadmin", { key: session.key, gid: group.id, targetKey });
+    onChange();
   };
   return <Modal onClose={onClose} title="Manage members">
     <p style={S.muted}>Admins can remove members & delete messages. {isOwner ? "As owner, you can permanently ban." : "Only the owner can permanently ban."}</p>
@@ -517,7 +521,7 @@ function AdminModal({ session, group, isOwner, onClose, onChange, onDeleted }) {
             <div style={S.muted}>{isOwn ? "Owner" : isAdm ? "Admin" : "Member"}</div>
           </div>
           {!isOwn && <>
-            <button style={S.miniBtn} title="Toggle admin" onClick={() => toggleAdmin(mKey)}><Crown size={14} color={isAdm ? "#fbbf24" : "#6b7a85"} /></button>
+            {isOwner && <button style={S.miniBtn} title="Toggle admin" onClick={() => toggleAdmin(mKey)}><Crown size={14} color={isAdm ? "#fbbf24" : "#6b7a85"} /></button>}
             <button style={S.miniBtn} title="Remove (can rejoin)" onClick={() => removeUser(mKey)}><UserMinus size={14} color="#f59e0b" /></button>
             {isOwner && <button style={S.miniBtn} title="Ban permanently" onClick={() => banUser(mKey)}><Ban size={14} color="#f87171" /></button>}
           </>}
