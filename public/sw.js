@@ -2,7 +2,7 @@
 // (Messages still need the server running to sync; the UI shell loads offline.)
 //
 // Bump CACHE whenever the shell changes so installed clients drop the old copy.
-const CACHE = "commons-v2";
+const CACHE = "commons-v3";
 const SHELL = [
   "./", "index.html", "app.js", "lucide.js", "qrcode.min.js",
   "react.min.js", "react-dom.min.js", "manifest.webmanifest",

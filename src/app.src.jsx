@@ -1,6 +1,6 @@
 const { useState, useEffect, useRef, useCallback } = React;
 const {
-  Users, MapPin, Shield, Send, Eye, EyeOff, Link2, QrCode,
+  Users, MapPin, Shield, Send, Eye, EyeOff, Link2, QrCode, Search,
   X, Trash2, UserMinus, Crown, LogIn, Plus, Copy, Check, MessageSquare, ChevronLeft, Ban, Key, LogOut
 } = lucide;
 
@@ -256,7 +256,6 @@ function GroupApp({ session, group, setGroup, tab, setTab, onLeave, onLogout }) 
   const [showInvite, setShowInvite] = useState(false);
   const [showAdmin, setShowAdmin] = useState(false);
   const [changingName, setChangingName] = useState(false);
-  const [anonDefault, setAnonDefault] = useState(false); // anonymity lives only inside a community
   const me = group.members[session.key];
   const isOwner = group.ownerKey === session.key;
   const isAdmin = isOwner || (group.admins || []).includes(session.key);
@@ -280,18 +279,17 @@ function GroupApp({ session, group, setGroup, tab, setTab, onLeave, onLogout }) 
           <div style={{ fontWeight: 700 }}>{group.name}</div>
           <button style={S.nameBtn} onClick={() => setChangingName(true)}>{me.username}{isOwner ? " · owner" : isAdmin ? " · admin" : ""} ✎</button>
         </div>
-        <AnonToggle anon={anonDefault} setAnon={setAnonDefault} />
-        <button style={S.iconBtn} onClick={() => setShowInvite(true)}><QrCode size={18} /></button>
-        {isAdmin && <button style={S.iconBtn} onClick={() => setShowAdmin(true)}><Shield size={18} /></button>}
+        <button style={S.iconBtn} title="Invite people" onClick={() => setShowInvite(true)}><QrCode size={18} /></button>
+        {isAdmin && <button style={S.iconBtn} title="Manage members" onClick={() => setShowAdmin(true)}><Shield size={18} /></button>}
         <button style={S.iconBtn} title="Log out" onClick={onLogout}><LogOut size={18} /></button>
       </div>
       <div style={S.tabs}>
         <button style={{ ...S.tab, ...(tab === "general" ? S.tabActive : {}) }} onClick={() => setTab("general")}><MessageSquare size={16} /> General</button>
-        <button style={{ ...S.tab, ...(tab === "neighborhood" ? S.tabActive : {}) }} onClick={() => setTab("neighborhood")}><MapPin size={16} /> Neighborhood</button>
+        <button style={{ ...S.tab, ...(tab === "forum" ? S.tabActive : {}) }} onClick={() => setTab("forum")}><MapPin size={16} /> Forum</button>
       </div>
       {tab === "general"
-        ? <GeneralChat session={session} group={group} me={me} isAdmin={isAdmin} anonDefault={anonDefault} />
-        : <Neighborhood session={session} group={group} me={me} isAdmin={isAdmin} anonDefault={anonDefault} />}
+        ? <GeneralChat session={session} group={group} me={me} isAdmin={isAdmin} />
+        : <Forum session={session} group={group} me={me} isAdmin={isAdmin} />}
       {showInvite && <InviteModal group={group} onClose={() => setShowInvite(false)} />}
       {showAdmin && isAdmin && <AdminModal session={session} group={group} isOwner={isOwner} onClose={() => setShowAdmin(false)} onChange={reloadGroup} onDeleted={onLeave} />}
       {changingName && <ChangeNameModal session={session} group={group} me={me} onClose={() => setChangingName(false)} onChanged={(g) => { setGroup(g); }} />}
@@ -354,11 +352,6 @@ function ChangeNameModal({ session, group, me, onClose, onChanged }) {
   </Modal>;
 }
 
-// ---------- anonymity (inside community only) ----------
-function AnonToggle({ anon, setAnon }) {
-  return <button style={{ ...S.iconBtn, color: anon ? "#2dd4bf" : "#e8eef2" }} title={anon ? "Posting anonymously by default" : "Posting with your username"} onClick={() => setAnon(!anon)}>{anon ? <EyeOff size={18} /> : <Eye size={18} />}</button>;
-}
-
 // ---------- messages hook ----------
 function useItems(prefix, ms = 2500) {
   const [items, setItems] = useState([]);
@@ -370,10 +363,10 @@ function useItems(prefix, ms = 2500) {
   return [items, load];
 }
 
-function Composer({ me, anonDefault, onSend, placeholder }) {
+function Composer({ me, onSend, placeholder }) {
   const [text, setText] = useState("");
   const [anonOverride, setAnonOverride] = useState(null);
-  const anon = anonOverride === null ? anonDefault : anonOverride;
+  const anon = !!anonOverride;
   const send = () => { if (!text.trim()) return; onSend(text.trim(), anon); setText(""); };
   return <div style={S.composer}>
     <button style={{ ...S.iconBtn, color: anon ? "#2dd4bf" : "#9fb0bd" }} title={anon ? "Sending anonymously" : "Sending as " + me.username} onClick={() => setAnonOverride(!anon)}>{anon ? <EyeOff size={20} /> : <Eye size={20} />}</button>
@@ -384,17 +377,27 @@ function Composer({ me, anonDefault, onSend, placeholder }) {
 
 const senderLabel = (m) => m.system ? null : (m.anon ? anonLabel((m.author || "x") + (m.gid || "")) : m.authorName);
 
-function GeneralChat({ session, group, me, isAdmin, anonDefault }) {
+function GeneralChat({ session, group, me, isAdmin }) {
   const prefix = msgPrefix(group.id);
   const [items, reload] = useItems(prefix);
+  const [query, setQuery] = useState("");
   const endRef = useRef(null);
   useEffect(() => { endRef.current && endRef.current.scrollIntoView({ behavior: "smooth" }); }, [items.length]);
   const send = async (text, anon) => { const id = uid(), ts = now(); await sset(`${prefix}${ts}:${id}`, { id, ts, text, anon, author: session.key, authorName: me.username, gid: group.id }); reload(); };
   const del = async (m) => { await sdelete(m._key); reload(); };
+  // Case-insensitive search across this group's messages. System notices are
+  // excluded so a search only returns actual conversation.
+  const q = query.trim().toLowerCase();
+  const shown = q ? items.filter((m) => !m.system && (m.text || "").toLowerCase().includes(q)) : items;
   return <div style={S.chatArea}>
+    <div style={S.searchBar}>
+      <Search size={16} style={{ color: "#7b8a96", flexShrink: 0 }} />
+      <input style={S.searchInput} value={query} placeholder="Search messages" onChange={(e) => setQuery(e.target.value)} />
+      {query && <button style={S.iconBtn} title="Clear search" onClick={() => setQuery("")}><X size={16} /></button>}
+    </div>
     <div style={S.messages}>
-      {items.length === 0 && <div style={S.empty}><p style={S.muted}>Be the first to say hello 👋</p></div>}
-      {items.map((m) => {
+      {shown.length === 0 && <div style={S.empty}><p style={S.muted}>{q ? `No messages match “${query.trim()}”.` : "Be the first to say hello 👋"}</p></div>}
+      {shown.map((m) => {
         if (m.system) return <div key={m.id} style={S.systemMsg} className="reveal">{m.text}</div>;
         const mine = m.author === session.key;
         return <div key={m.id} style={{ ...S.bubbleRow, justifyContent: mine ? "flex-end" : "flex-start" }} className="reveal">
@@ -410,11 +413,11 @@ function GeneralChat({ session, group, me, isAdmin, anonDefault }) {
       })}
       <div ref={endRef} />
     </div>
-    <Composer me={me} anonDefault={anonDefault} onSend={send} placeholder="Message the whole community…" />
+    <Composer me={me} onSend={send} placeholder="Message the whole community…" />
   </div>;
 }
 
-function Neighborhood({ session, group, me, isAdmin, anonDefault }) {
+function Forum({ session, group, me, isAdmin }) {
   const prefix = postPrefix(group.id);
   const [items, reload] = useItems(prefix, 3000);
   const [composing, setComposing] = useState(false);
@@ -426,15 +429,15 @@ function Neighborhood({ session, group, me, isAdmin, anonDefault }) {
   const sorted = [...items].sort((a, b) => b.ts - a.ts);
   return <div style={S.chatArea}>
     <div style={S.feed}>
-      {sorted.length === 0 && <div style={S.empty}><MapPin size={28} style={{ opacity: .5 }} /><p style={S.muted}>No posts yet. Share something with the neighborhood.</p></div>}
-      {sorted.map((p) => <PostCard key={p.id} post={p} session={session} me={me} isAdmin={isAdmin} anonDefault={anonDefault} onDelete={() => del(p)} onReply={(t, a) => addReply(p, t, a)} onDeleteReply={(rid) => delReply(p, rid)} />)}
+      {sorted.length === 0 && <div style={S.empty}><MapPin size={28} style={{ opacity: .5 }} /><p style={S.muted}>No posts yet. Share something with the forum.</p></div>}
+      {sorted.map((p) => <PostCard key={p.id} post={p} session={session} me={me} isAdmin={isAdmin} onDelete={() => del(p)} onReply={(t, a) => addReply(p, t, a)} onDeleteReply={(rid) => delReply(p, rid)} />)}
     </div>
     <div style={S.composer}><button style={S.primary} onClick={() => setComposing(true)}><Plus size={18} /> New post</button></div>
-    {composing && <PostComposer me={me} anonDefault={anonDefault} onClose={() => setComposing(false)} onPost={(t, b, a) => { post(t, b, a); setComposing(false); }} />}
+    {composing && <PostComposer me={me} onClose={() => setComposing(false)} onPost={(t, b, a) => { post(t, b, a); setComposing(false); }} />}
   </div>;
 }
 
-function PostCard({ post, session, me, isAdmin, anonDefault, onDelete, onReply, onDeleteReply }) {
+function PostCard({ post, session, me, isAdmin, onDelete, onReply, onDeleteReply }) {
   const [open, setOpen] = useState(false);
   const mine = post.author === session.key;
   const replies = post.replies || [];
@@ -456,16 +459,16 @@ function PostCard({ post, session, me, isAdmin, anonDefault, onDelete, onReply, 
         </div>
         <div style={{ fontSize: 14 }}>{r.text}</div>
       </div>; })}
-      <Composer me={me} anonDefault={anonDefault} onSend={(t, a) => onReply(t, a)} placeholder="Add a reply…" />
+      <Composer me={me} onSend={(t, a) => onReply(t, a)} placeholder="Add a reply…" />
     </div>}
   </div>;
 }
 
-function PostComposer({ me, anonDefault, onClose, onPost }) {
+function PostComposer({ me, onClose, onPost }) {
   const [title, setTitle] = useState(""); const [body, setBody] = useState("");
   const [anonOverride, setAnonOverride] = useState(null);
-  const anon = anonOverride === null ? anonDefault : anonOverride;
-  return <Modal onClose={onClose} title="New neighborhood post">
+  const anon = !!anonOverride;
+  return <Modal onClose={onClose} title="New forum post">
     <label style={S.label}>Title (optional)</label>
     <input style={S.input} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Lost cat, recommendation, alert…" maxLength={80} />
     <label style={{ ...S.label, marginTop: 10 }}>What's happening?</label>
@@ -580,6 +583,8 @@ const S = {
   scroll: { flex: 1, overflowY: "auto", padding: 14, display: "flex", flexDirection: "column", gap: 10 },
   chatArea: { flex: 1, display: "flex", flexDirection: "column", minHeight: 0 },
   messages: { flex: 1, overflowY: "auto", padding: 14, display: "flex", flexDirection: "column", gap: 10 },
+  searchBar: { display: "flex", alignItems: "center", gap: 8, padding: "9px 14px", borderBottom: `1px solid ${LINE}`, background: PANEL },
+  searchInput: { flex: 1, background: PANEL2, border: `1px solid ${LINE}`, color: TEXT, borderRadius: 20, padding: "8px 14px", outline: "none", fontSize: 14, fontFamily: "inherit" },
   feed: { flex: 1, overflowY: "auto", padding: 14, display: "flex", flexDirection: "column", gap: 12 },
   bubbleRow: { display: "flex" },
   bubble: { maxWidth: "80%", background: PANEL2, border: `1px solid ${LINE}`, borderRadius: 14, padding: "9px 12px", fontSize: 15, lineHeight: 1.4 },
