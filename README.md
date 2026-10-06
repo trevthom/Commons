@@ -1,76 +1,131 @@
 # Commons
 
-A community chat PWA: every community has a **General** chat and a **Forum** for
-bulletin-board posts. Accounts are anonymous login **keys** (no
-email/password). Usernames are chosen per community and reserved permanently.
-No private user-to-user messaging.
+A small, self-hosted chat app for communities. Every community has a **General**
+chat and a **Forum** for bulletin-board posts. Accounts are anonymous login
+**keys** — no email, no password, no recovery. Everything runs on one Node
+process with zero runtime dependencies and one JSON file for storage.
 
-Running the app needs only **Node.js** (v16+). Editing the UI needs a
-[build step](HANDOFF.md): `src/app.src.jsx` is the source and
-`public/app.js` is the generated file the browser loads.
+Open the app in a browser, or install it as a PWA on a phone.
+
+## Features
+
+**General chat**
+- Telegram-style bubbles: your messages sit on the right in their own color,
+  everyone else's on the left. 92% max width.
+- A **⋮ menu** on every message: **Reply**, **View message thread** (once the
+  message is part of a chain), **Pin/Unpin message** (admins), **Mute/Unmute
+  user**, and **Delete message** (your own; admins can delete any).
+- **Reply chains** — a reply shows who it answered plus a one-line preview of
+  their message. If that message is deleted later the preview reads "Deleted".
+- **Message threads** open the whole chain, with a composer that replies to the
+  original.
+- **Pinned messages** — admins can pin several. The bar at the top shows the
+  most recent pin; tap it to scroll through the others (the counter reads
+  "1/3", "2/3", …). Deleting a message removes its pin.
+- **Search** runs on the server across the community's *entire* history, not
+  just what your device has loaded. Results list the sender, time, and message;
+  tapping a result jumps to it in the chat.
+- **Emoji picker** in the composer — emoji are ordinary text, so they send
+  through the same path as any message.
+- **Muting** hides that member's Forum posts and their General messages for
+  *you*. If the muted person's message is part of a reply chain it stays
+  collapsed behind a "Muted" placeholder you can tap to reveal.
+
+**Forum**
+- Posts with an optional title, plus threaded replies.
+- Compose as yourself or anonymously, per post.
+
+**Anonymity**
+- Chosen **per message or post** with the eye button beside the composer.
+- Anonymous labels ("Anon Cedar 42") are stable within a community, so an
+  anonymous regular is recognizable without being identified.
+
+**Moderation**
+- Admins can remove members (who may rejoin), delete any message or post, and
+  pin messages.
+- The **owner** can also permanently ban someone — they can never rejoin — and
+  delete the community with all its content.
+
+## Accounts
+
+- Tap **Create a new account** to get a one-time **login key** like
+  `K7QF-2M9P-...`. Save it: it is the only way back in, it only works on the
+  server that issued it, and there is no recovery.
+- **I have a login key** signs you in on another device. Logging in
+  **rotates your session and logs you out everywhere else** — one active
+  session per account.
+- Closing the tab logs you out (you'll need the key again). There's also a
+  **Log out** button in the app.
+
+## Usernames
+
+- You choose a username **when you enter a community**. It's reserved to you
+  permanently — nobody else can take it, even after you change yours.
+- You can change it **once every 60 days**. Everyone in the community sees a
+  notice that your name changed (the server writes that notice, so it can't be
+  forged). Your old name stays reserved to you.
+
+## Invites
+
+The invite screen has two tabs:
+
+| Type | Behaviour |
+| --- | --- |
+| **Indefinite link** | Works any number of times, forever. |
+| **One-time link** | Works exactly once; it stops working the moment one person joins. Generate a fresh one whenever you need it. |
+
+Each shows a QR code, a copyable link, and the raw code. A community has one
+unused one-time code at a time — generating a new one replaces it.
+
+## Security model
+
+- **Writes are authenticated.** Posting a message, post, or reply — and
+  deleting one — requires your account key **and** its current session id, sent
+  to a validated endpoint (`/api/message/*`, `/api/post/*`, `/api/group/*`).
+  The server sets the author itself, so text and identity can't be forged by
+  crafting a request. There is no raw "write any key" endpoint any more.
+- **Account records are unreachable** through the read API: login keys are never
+  readable or listable, so nobody can enumerate accounts.
+- **Group records are read-only** through the read API. All group changes
+  (members, admins, bans, invites, pins, deletion) go through validated
+  endpoints that check the session and your role.
+- **Reads are open** to anyone who knows a group's id or invite — the invite is
+  the capability. Treat an invite link like a key to the room.
+- Anonymity hides your name from other members, not from the server: every
+  message still records who wrote it for moderation.
 
 ## Run it
 
     node server.js
 
-The terminal prints a `localhost` URL (this device) and a `192.168.x.x` URL
-(open on a phone on the same Wi-Fi). Data is stored in `data.json`.
+The terminal prints a `localhost` URL (this device) and a `192.168.x.x` URL you
+can open on a phone on the same Wi-Fi. Data is stored in `data.json`.
+
+Environment: `PORT=3000 node server.js` to change the port,
+`DATA_FILE=/path/to/db.json node server.js` to relocate storage (useful with a
+mounted disk).
 
 ## Develop the UI
 
-    bun install          # installs esbuild + jsdom (dev only)
-    bun run build        # regenerates public/app.js from src/app.src.jsx
+`src/app.src.jsx` is the source of truth; `public/app.js` is the generated file
+the browser actually loads.
+
+    bun install          # esbuild + jsdom (dev only)
+    bun run build        # regenerate public/app.js from src/app.src.jsx
     bun run build:watch  # rebuild on save
 
-Run `node tools/smoke.mjs` and `node tools/render-test.mjs` (against a running
-server) to check the API and the rendered UI. See **HANDOFF.md** for the full
-architecture, API reference, and known issues.
+After changing anything in `public/`, bump `CACHE` in `public/sw.js` so
+installed clients drop the old shell.
 
-## How accounts work
+## Tests
 
-- On first use, tap **Create a new account**. You get a one-time **login key**
-  like `K7QF-2M9P-...`. Save it — it's the only way back into your account and
-  it only works on the server that issued it. There is no recovery.
-- Log in on another device with **I have a login key**. Logging in there
-  **logs you out everywhere else** (one active session per account).
-- Closing the browser/tab logs you out (you'll need your key again). There's
-  also a **Log out** button in the app.
+With a server running:
 
-## Usernames
+    node tools/smoke.mjs http://localhost:8080       # API, auth, pins, search
+    node tools/render-test.mjs http://localhost:8080 # loads the real page in jsdom and drives it
 
-- You pick a username **when you enter a community**. It's reserved to you
-  forever — no one else can take it, even if you later change yours.
-- You can change your username **once every 60 days**; everyone in the
-  community sees a note that your name changed.
-
-## Chat
-
-- Every message bubble has a **⋮ menu**: reply to it, view its **message
-  thread** (once it's part of a reply chain), mute its author, and — on your own
-  messages — delete it.
-- **Replies** show who you replied to plus a one-line preview of their message,
-  like Telegram. If that message is deleted later, the preview reads
-  "Deleted".
-- **Muting** a member hides their Forum posts and their messages in General for
-  you. If you mute someone whose message is part of a reply chain, it stays
-  collapsed behind a "Muted" placeholder you can tap to reveal. Mutes are kept
-  in your browser only.
-
-## Anonymity
-
-Chosen **per message/post** with the eye button beside the composer. Anonymous
-labels ("Anon Cedar 42") are stable within a community.
-
-## Invites
-
-- **Indefinite link** — works any number of times.
-- **One-time link** — works exactly once, then stops. Generate a fresh one from
-  the invite screen whenever you need it.
-
-## Moderation
-
-- Admins can remove members (who may rejoin) and delete any message/post.
-- The **owner** can **permanently ban** a member — they can never rejoin.
+Both exit non-zero on failure. See **HANDOFF.md** for the architecture, data
+model, full API reference, and access rules.
 
 ## Install as an app (PWA)
 
@@ -79,7 +134,7 @@ Desktop: install icon in the address bar. (Requires HTTPS when hosted publicly.)
 
 ## Notes
 
-- `PORT=3000 node server.js` to change port. `DATA_FILE=/path node server.js`
-  to relocate storage (useful with a mounted disk on a host).
-- Reset everything: stop the server, delete `data.json`.
-- `data.json` is fine for dozens of users; move to SQLite beyond that.
+- `data.json` is fine for dozens of users; move to SQLite beyond that. A file
+  that fails to parse is moved aside as `data.json.corrupt-<timestamp>` rather
+  than overwritten.
+- Reset everything: stop the server and delete `data.json`.

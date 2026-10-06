@@ -100,9 +100,18 @@ const groupKey = (id) => "group:" + id;
 // every account (and therefore every login) on the server.
 const isAccountKey = (k) => typeof k === "string" && k.startsWith("account:");
 const isGroupKey = (k) => typeof k === "string" && k.startsWith("group:");
-// The generic KV surface is only for content written by clients under a group:
-// messages and neighborhood posts. Groups are created/edited via /api/group/*.
-const isWritableKey = (k) => typeof k === "string" && (k.startsWith("msg:") || k.startsWith("post:"));
+
+// ===== AUTH =====
+// Every mutation must present the account key *and* its live session id. The
+// session id rotates on each login (which kicks other devices), so merely
+// knowing a key is not enough to write. Content endpoints derive the author
+// from the authenticated session — nothing the client sends can set it.
+const sessionOk = (key, sessionId) => {
+  const a = store[acctKey(key)];
+  return !!a && typeof sessionId === "string" && sessionId.length > 0 && a.sessionId === sessionId;
+};
+const isAdminOf = (g, key) => !!g && (g.ownerKey === key || (g.admins || []).includes(key));
+const memberName = (g, key) => (g && g.members[key] && g.members[key].username) || null;
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -138,24 +147,24 @@ const server = http.createServer(async (req, res) => {
 
   // ===== GROUPS =====
   if (p === "/api/group/create" && req.method === "POST") {
-    const body = await readBody(req); const key = normKey(body.key);
+    const body = await readBody(req); const key = normKey(body.key); const sessionId = body.sessionId;
     const name = String(body.name || "").trim().slice(0, 40);
     return atomic(() => {
-      if (!store[acctKey(key)]) return sendJSON(res, 200, { ok: false, error: "invalid-key" });
+      if (!sessionOk(key, sessionId)) return sendJSON(res, 200, { ok: false, error: "invalid-key" });
       if (!name) return sendJSON(res, 200, { ok: false, error: "invalid-name" });
       const id = newGroupId();
       const g = { id, name, createdAt: now(), ownerKey: key, admins: [key],
         members: { [key]: { username: null, joinedAt: now(), lastNameChange: 0 } },
-        usernames: {}, banned: [], invite: newInvite(), inviteOnce: null };
+        usernames: {}, banned: [], invite: newInvite(), inviteOnce: null, pins: [] };
       store[groupKey(id)] = g; persist();
       sendJSON(res, 200, { ok: true, group: g });
     });
   }
 
   if (p === "/api/group/join" && req.method === "POST") {
-    const body = await readBody(req); const key = normKey(body.key); const code = String(body.code || "").trim();
+    const body = await readBody(req); const key = normKey(body.key); const sessionId = body.sessionId; const code = String(body.code || "").trim();
     return atomic(() => {
-      if (!store[acctKey(key)]) return sendJSON(res, 200, { ok: false, error: "invalid-key" });
+      if (!sessionOk(key, sessionId)) return sendJSON(res, 200, { ok: false, error: "invalid-key" });
       let g = null, onceUsed = false;
       for (const k of Object.keys(store)) {
         if (!isGroupKey(k)) continue;
@@ -179,8 +188,9 @@ const server = http.createServer(async (req, res) => {
   // Mint (or rotate) the group's one-time invite. Any member can hand one out;
   // the previous unused code is replaced the moment a new one is generated.
   if (p === "/api/group/invite" && req.method === "POST") {
-    const body = await readBody(req); const key = normKey(body.key); const gid = body.gid;
+    const body = await readBody(req); const key = normKey(body.key); const sessionId = body.sessionId; const gid = body.gid;
     return atomic(() => {
+      if (!sessionOk(key, sessionId)) return sendJSON(res, 200, { ok: false, error: "auth" });
       const g = store[groupKey(gid)];
       if (!g) return sendJSON(res, 200, { ok: false, error: "not-found" });
       if (!g.members[key]) return sendJSON(res, 200, { ok: false, error: "not-member" });
@@ -190,8 +200,9 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (p === "/api/group/claimname" && req.method === "POST") {
-    const body = await readBody(req); const key = normKey(body.key); const gid = body.gid; const username = body.username;
+    const body = await readBody(req); const key = normKey(body.key); const sessionId = body.sessionId; const gid = body.gid; const username = body.username;
     return atomic(() => {
+      if (!sessionOk(key, sessionId)) return sendJSON(res, 200, { ok: false, error: "auth" });
       const g = store[groupKey(gid)];
       if (!g || !g.members[key]) return sendJSON(res, 200, { ok: false, error: "not-member" });
       const clean = String(username || "").trim();
@@ -210,7 +221,13 @@ const server = http.createServer(async (req, res) => {
       const oldName = mem.username;
       g.usernames[lc] = key;            // old reservation intentionally kept
       mem.username = clean;
-      if (!isFirst) mem.lastNameChange = now();
+      if (!isFirst) {
+        mem.lastNameChange = now();
+        // The rename notice is written here rather than by the client, so it
+        // can't be forged, altered, or skipped.
+        const nid = newId(), nts = now();
+        store[`msg:${gid}:general:${nts}:${nid}`] = { id: nid, ts: nts, system: true, text: `${oldName} changed their name to ${clean}` };
+      }
       persist();
       sendJSON(res, 200, { ok: true, group: g, changedFrom: isFirst ? null : oldName });
     });
@@ -218,11 +235,12 @@ const server = http.createServer(async (req, res) => {
 
   // Admin removes a member. Non-permanent: they may rejoin.
   if (p === "/api/group/remove" && req.method === "POST") {
-    const body = await readBody(req); const key = normKey(body.key); const gid = body.gid; const targetKey = normKey(body.targetKey);
+    const body = await readBody(req); const key = normKey(body.key); const sessionId = body.sessionId; const gid = body.gid; const targetKey = normKey(body.targetKey);
     return atomic(() => {
+      if (!sessionOk(key, sessionId)) return sendJSON(res, 200, { ok: false, error: "auth" });
       const g = store[groupKey(gid)];
       if (!g) return sendJSON(res, 200, { ok: false, error: "not-found" });
-      if (g.ownerKey !== key && !(g.admins || []).includes(key)) return sendJSON(res, 200, { ok: false, error: "not-admin" });
+      if (!isAdminOf(g, key)) return sendJSON(res, 200, { ok: false, error: "not-admin" });
       if (targetKey === g.ownerKey) return sendJSON(res, 200, { ok: false, error: "cant-remove-owner" });
       delete g.members[targetKey];
       g.admins = (g.admins || []).filter((k) => k !== targetKey);
@@ -233,8 +251,9 @@ const server = http.createServer(async (req, res) => {
 
   // Admin/owner grants or revokes admin. Only the owner can appoint admins.
   if (p === "/api/group/toggleadmin" && req.method === "POST") {
-    const body = await readBody(req); const key = normKey(body.key); const gid = body.gid; const targetKey = normKey(body.targetKey);
+    const body = await readBody(req); const key = normKey(body.key); const sessionId = body.sessionId; const gid = body.gid; const targetKey = normKey(body.targetKey);
     return atomic(() => {
+      if (!sessionOk(key, sessionId)) return sendJSON(res, 200, { ok: false, error: "auth" });
       const g = store[groupKey(gid)];
       if (!g) return sendJSON(res, 200, { ok: false, error: "not-found" });
       if (g.ownerKey !== key) return sendJSON(res, 200, { ok: false, error: "not-owner" });
@@ -249,8 +268,9 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (p === "/api/group/ban" && req.method === "POST") {
-    const body = await readBody(req); const ownerKey = normKey(body.ownerKey); const gid = body.gid; const targetKey = normKey(body.targetKey);
+    const body = await readBody(req); const ownerKey = normKey(body.key); const sessionId = body.sessionId; const gid = body.gid; const targetKey = normKey(body.targetKey);
     return atomic(() => {
+      if (!sessionOk(ownerKey, sessionId)) return sendJSON(res, 200, { ok: false, error: "auth" });
       const g = store[groupKey(gid)];
       if (!g) return sendJSON(res, 200, { ok: false, error: "not-found" });
       if (g.ownerKey !== ownerKey) return sendJSON(res, 200, { ok: false, error: "not-owner" });
@@ -265,12 +285,13 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (p === "/api/group/delete" && req.method === "POST") {
-    const body = await readBody(req); const ownerKey = normKey(body.ownerKey); const gid = body.gid;
+    const body = await readBody(req); const ownerKey = normKey(body.key); const sessionId = body.sessionId; const gid = body.gid;
     return atomic(() => {
+      if (!sessionOk(ownerKey, sessionId)) return sendJSON(res, 200, { ok: false, error: "auth" });
       const g = store[groupKey(gid)];
       if (!g) return sendJSON(res, 200, { ok: false, error: "not-found" });
       if (g.ownerKey !== ownerKey) return sendJSON(res, 200, { ok: false, error: "not-owner" });
-      // remove the group doc + all its messages and neighborhood posts
+      // remove the group doc + all its messages and forum posts
       for (const k of Object.keys(store)) {
         if (k === groupKey(gid) || k.startsWith(`msg:${gid}:`) || k.startsWith(`post:${gid}:`)) delete store[k];
       }
@@ -279,7 +300,178 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  // ===== GENERIC KV (message + post content only) =====
+  // ===== CONTENT (authenticated writes) =====
+  // Messages, posts and replies are only ever written here. The author is taken
+  // from the authenticated session, so neither the text nor the identity of a
+  // post can be forged — there is no raw key-write path any more.
+  if (p === "/api/message/send" && req.method === "POST") {
+    const body = await readBody(req);
+    const key = normKey(body.key); const sessionId = body.sessionId;
+    const gid = String(body.gid || "");
+    const text = String(body.text || "").trim().slice(0, 4000);
+    const anon = !!body.anon;
+    return atomic(() => {
+      if (!sessionOk(key, sessionId)) return sendJSON(res, 200, { ok: false, error: "auth" });
+      const g = store[groupKey(gid)];
+      if (!g || !g.members[key]) return sendJSON(res, 200, { ok: false, error: "not-member" });
+      if (!text) return sendJSON(res, 200, { ok: false, error: "empty" });
+      const id = newId(), ts = now();
+      const msg = { id, ts, text, anon, author: key, authorName: memberName(g, key), gid };
+      // A reply may only point at a message that really exists in this group.
+      if (body.replyTo && typeof body.replyTo === "object") {
+        const pk = String(body.replyTo.key || "");
+        const par = pk.startsWith(`msg:${gid}:general:`) ? store[pk] : null;
+        if (par && !par.system) msg.replyTo = { key: pk, id: par.id, ts: par.ts, author: par.author, anon: !!par.anon };
+      }
+      const k = `msg:${gid}:general:${ts}:${id}`;
+      store[k] = msg; persist();
+      sendJSON(res, 200, { ok: true, key: k, message: msg });
+    });
+  }
+
+  if (p === "/api/message/delete" && req.method === "POST") {
+    const body = await readBody(req);
+    const key = normKey(body.key); const sessionId = body.sessionId;
+    const gid = String(body.gid || ""); const msgKey = String(body.msgKey || "");
+    return atomic(() => {
+      if (!sessionOk(key, sessionId)) return sendJSON(res, 200, { ok: false, error: "auth" });
+      const g = store[groupKey(gid)];
+      if (!g || !g.members[key]) return sendJSON(res, 200, { ok: false, error: "not-member" });
+      if (!msgKey.startsWith(`msg:${gid}:general:`) || !store[msgKey]) return sendJSON(res, 200, { ok: false, error: "not-found" });
+      const m = store[msgKey];
+      if (m.author !== key && !isAdminOf(g, key)) return sendJSON(res, 200, { ok: false, error: "not-allowed" });
+      delete store[msgKey];
+      // A pin does not outlive its message.
+      if (Array.isArray(g.pins)) g.pins = g.pins.filter((pin) => pin.key !== msgKey);
+      persist();
+      sendJSON(res, 200, { ok: true });
+    });
+  }
+
+  if (p === "/api/post/create" && req.method === "POST") {
+    const body = await readBody(req);
+    const key = normKey(body.key); const sessionId = body.sessionId; const gid = String(body.gid || "");
+    const title = String(body.title || "").trim().slice(0, 80);
+    const text = String(body.text || "").trim().slice(0, 4000);
+    const anon = !!body.anon;
+    return atomic(() => {
+      if (!sessionOk(key, sessionId)) return sendJSON(res, 200, { ok: false, error: "auth" });
+      const g = store[groupKey(gid)];
+      if (!g || !g.members[key]) return sendJSON(res, 200, { ok: false, error: "not-member" });
+      if (!text) return sendJSON(res, 200, { ok: false, error: "empty" });
+      const id = newId(), ts = now();
+      const post = { id, ts, title, text, anon, author: key, authorName: memberName(g, key), gid, replies: [] };
+      const k = `post:${gid}:${ts}:${id}`;
+      store[k] = post; persist();
+      sendJSON(res, 200, { ok: true, key: k, post });
+    });
+  }
+
+  if (p === "/api/post/delete" && req.method === "POST") {
+    const body = await readBody(req);
+    const key = normKey(body.key); const sessionId = body.sessionId; const gid = String(body.gid || ""); const postKey = String(body.postKey || "");
+    return atomic(() => {
+      if (!sessionOk(key, sessionId)) return sendJSON(res, 200, { ok: false, error: "auth" });
+      const g = store[groupKey(gid)];
+      if (!g || !g.members[key]) return sendJSON(res, 200, { ok: false, error: "not-member" });
+      if (!postKey.startsWith(`post:${gid}:`) || !store[postKey]) return sendJSON(res, 200, { ok: false, error: "not-found" });
+      const po = store[postKey];
+      if (po.author !== key && !isAdminOf(g, key)) return sendJSON(res, 200, { ok: false, error: "not-allowed" });
+      delete store[postKey]; persist();
+      sendJSON(res, 200, { ok: true });
+    });
+  }
+
+  if (p === "/api/post/reply" && req.method === "POST") {
+    const body = await readBody(req);
+    const key = normKey(body.key); const sessionId = body.sessionId; const gid = String(body.gid || ""); const postKey = String(body.postKey || "");
+    const text = String(body.text || "").trim().slice(0, 4000);
+    const anon = !!body.anon;
+    return atomic(() => {
+      if (!sessionOk(key, sessionId)) return sendJSON(res, 200, { ok: false, error: "auth" });
+      const g = store[groupKey(gid)];
+      if (!g || !g.members[key]) return sendJSON(res, 200, { ok: false, error: "not-member" });
+      if (!postKey.startsWith(`post:${gid}:`) || !store[postKey]) return sendJSON(res, 200, { ok: false, error: "not-found" });
+      if (!text) return sendJSON(res, 200, { ok: false, error: "empty" });
+      const po = store[postKey];
+      const reply = { id: newId(), ts: now(), text, anon, author: key, authorName: memberName(g, key), gid };
+      po.replies = [...(po.replies || []), reply];
+      persist();
+      sendJSON(res, 200, { ok: true, post: po });
+    });
+  }
+
+  if (p === "/api/post/deleteReply" && req.method === "POST") {
+    const body = await readBody(req);
+    const key = normKey(body.key); const sessionId = body.sessionId; const gid = String(body.gid || "");
+    const postKey = String(body.postKey || ""); const replyId = String(body.replyId || "");
+    return atomic(() => {
+      if (!sessionOk(key, sessionId)) return sendJSON(res, 200, { ok: false, error: "auth" });
+      const g = store[groupKey(gid)];
+      if (!g || !g.members[key]) return sendJSON(res, 200, { ok: false, error: "not-member" });
+      if (!postKey.startsWith(`post:${gid}:`) || !store[postKey]) return sendJSON(res, 200, { ok: false, error: "not-found" });
+      const po = store[postKey];
+      const reply = (po.replies || []).find((r) => r.id === replyId);
+      if (!reply) return sendJSON(res, 200, { ok: false, error: "not-found" });
+      if (reply.author !== key && !isAdminOf(g, key)) return sendJSON(res, 200, { ok: false, error: "not-allowed" });
+      po.replies = (po.replies || []).filter((r) => r.id !== replyId);
+      persist();
+      sendJSON(res, 200, { ok: true, post: po });
+    });
+  }
+
+  // Search runs over the group's entire history on the server, so it never
+  // depends on what the client happens to have loaded. It needs a session and
+  // membership, since it reads the whole room's text.
+  if (p === "/api/message/search" && req.method === "POST") {
+    const body = await readBody(req);
+    const key = normKey(body.key); const sessionId = body.sessionId; const gid = String(body.gid || "");
+    const q = String(body.q || "").trim();
+    if (!sessionOk(key, sessionId)) return sendJSON(res, 200, { ok: false, error: "auth" });
+    const g = store[groupKey(gid)];
+    if (!g || !g.members[key]) return sendJSON(res, 200, { ok: false, error: "not-member" });
+    if (!q) return sendJSON(res, 200, { ok: true, results: [], total: 0 });
+    const needle = q.toLowerCase();
+    const prefix = `msg:${gid}:general:`;
+    const results = [];
+    for (const k of Object.keys(store)) {
+      if (!k.startsWith(prefix)) continue;
+      const m = store[k];
+      if (m.system || !String(m.text || "").toLowerCase().includes(needle)) continue;
+      results.push({ key: k, id: m.id, ts: m.ts, author: m.author, anon: !!m.anon, authorName: m.authorName, text: m.text });
+    }
+    results.sort((a, b) => b.ts - a.ts);
+    return sendJSON(res, 200, { ok: true, results: results.slice(0, 200), total: results.length });
+  }
+
+  // ===== PINS (admins only) =====
+  if ((p === "/api/group/pin" || p === "/api/group/unpin") && req.method === "POST") {
+    const pinning = p === "/api/group/pin";
+    const body = await readBody(req);
+    const key = normKey(body.key); const sessionId = body.sessionId; const gid = String(body.gid || ""); const msgKey = String(body.msgKey || "");
+    return atomic(() => {
+      if (!sessionOk(key, sessionId)) return sendJSON(res, 200, { ok: false, error: "auth" });
+      const g = store[groupKey(gid)];
+      if (!g || !g.members[key]) return sendJSON(res, 200, { ok: false, error: "not-member" });
+      if (!isAdminOf(g, key)) return sendJSON(res, 200, { ok: false, error: "not-admin" });
+      g.pins = Array.isArray(g.pins) ? g.pins : [];
+      if (pinning) {
+        if (!msgKey.startsWith(`msg:${gid}:general:`) || !store[msgKey]) return sendJSON(res, 200, { ok: false, error: "not-found" });
+        const m = store[msgKey];
+        // Newest pin first: pins[0] is what the pinned bar shows initially.
+        if (!g.pins.some((x) => x.key === msgKey)) {
+          g.pins.unshift({ key: msgKey, id: m.id, ts: m.ts, author: m.author, anon: !!m.anon, pinnedBy: key, pinnedAt: now() });
+          g.pins = g.pins.slice(0, 20);
+        }
+      } else {
+        g.pins = g.pins.filter((x) => x.key !== msgKey);
+      }
+      persist();
+      sendJSON(res, 200, { ok: true, group: g });
+    });
+  }
+
+  // ===== READS (open — a group id or invite is the capability) =====
   if (p === "/api/get") {
     const key = url.searchParams.get("key");
     if (isAccountKey(key)) return sendJSON(res, 403, { error: "forbidden" });
@@ -293,23 +485,14 @@ const server = http.createServer(async (req, res) => {
     for (const k of Object.keys(store)) if (k.startsWith(prefix) && !isAccountKey(k)) items.push([k, store[k]]);
     return sendJSON(res, 200, { prefix, items });
   }
-  if (p === "/api/set" && req.method === "POST") {
-    const { key, value } = await readBody(req);
-    if (!key) return sendJSON(res, 400, { error: "key required" });
-    if (!isWritableKey(key)) return sendJSON(res, 403, { error: "forbidden" });
-    store[key] = value; persist();
-    return sendJSON(res, 200, { key, value });
-  }
-  if (p === "/api/delete" && req.method === "POST") {
-    const { key } = await readBody(req);
-    if (!isWritableKey(key)) return sendJSON(res, 403, { error: "forbidden" });
-    const existed = key in store; delete store[key]; persist();
-    return sendJSON(res, 200, { key, deleted: existed });
-  }
   if (p === "/api/list") {
     const prefix = url.searchParams.get("prefix") || "";
     return sendJSON(res, 200, { keys: Object.keys(store).filter((k) => k.startsWith(prefix) && !isAccountKey(k)), prefix });
   }
+
+  // Any other /api/ path is a JSON 404 — it must never fall through to the
+  // static handler, which would answer with index.html.
+  if (p.startsWith("/api/")) return sendJSON(res, 404, { error: "not-found" });
 
   // ===== STATIC =====
   let file = p === "/" ? "/index.html" : decodeURIComponent(p);

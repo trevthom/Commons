@@ -2,7 +2,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 const {
   Users, MapPin, Shield, Send, Eye, EyeOff, Link2, QrCode, Search,
   X, Trash2, UserMinus, Crown, LogIn, Plus, Copy, Check, MessageSquare, ChevronLeft, Ban, Key, LogOut,
-  MoreVertical, CornerUpLeft, Bell, BellOff
+  MoreVertical, CornerUpLeft, Bell, BellOff, Smile, Pin, PinOff
 } = lucide;
 
 // ---------- API ----------
@@ -13,9 +13,19 @@ const api = {
   async get(path) { try { const r = await fetch(path); return await r.json(); } catch { return null; } },
 };
 const sget = async (k) => { const j = await api.get("/api/get?key=" + encodeURIComponent(k)); return j ? j.value : null; };
-const sset = async (k, v) => !!(await api.post("/api/set", { key: k, value: v }));
-const sdelete = async (k) => !!(await api.post("/api/delete", { key: k }));
 const slist = async (prefix) => { const j = await api.get("/api/list?prefix=" + encodeURIComponent(prefix)); return j ? j.keys : []; };
+// ---------- authenticated content calls ----------
+// The server derives the author from { key, sessionId } and ignores anything
+// else we send, so a client can neither forge nor delete somebody else's post.
+const auth = (s, extra) => ({ key: s.key, sessionId: s.sessionId, ...extra });
+const messageSend = (s, gid, text, anon, replyTo) => api.post("/api/message/send", auth(s, { gid, text, anon, replyTo }));
+const messageDelete = (s, gid, msgKey) => api.post("/api/message/delete", auth(s, { gid, msgKey }));
+const messageSearch = (s, gid, q) => api.post("/api/message/search", auth(s, { gid, q }));
+const postCreate = (s, gid, title, text, anon) => api.post("/api/post/create", auth(s, { gid, title, text, anon }));
+const postDelete = (s, gid, postKey) => api.post("/api/post/delete", auth(s, { gid, postKey }));
+const postReply = (s, gid, postKey, text, anon) => api.post("/api/post/reply", auth(s, { gid, postKey, text, anon }));
+const postDeleteReply = (s, gid, postKey, replyId) => api.post("/api/post/deleteReply", auth(s, { gid, postKey, replyId }));
+const setPin = (s, gid, msgKey, on) => api.post(on ? "/api/group/pin" : "/api/group/unpin", auth(s, { gid, msgKey }));
 // Batch read: fetch every value under a prefix in a single request.
 const slistValues = async (prefix) => {
   const j = await api.get("/api/mget?prefix=" + encodeURIComponent(prefix));
@@ -189,7 +199,7 @@ function Home({ session, pendingInvite, clearInvite, onOpen, onLogout }) {
   // Groups are created server-side so a client can't hand itself ownership.
   const createGroup = async () => {
     const name = newName.trim();
-    const r = await api.post("/api/group/create", { key: session.key, name });
+    const r = await api.post("/api/group/create", { key: session.key, sessionId: session.sessionId, name });
     if (!r || !r.ok) return;
     setCreating(false); setNewName(""); refresh(); onOpen(r.group);
   };
@@ -237,7 +247,7 @@ function JoinModal({ session, prefill, onClose, onJoined }) {
   const doJoin = async () => {
     setBusy(true); setErr("");
     const raw = code.trim();
-    const r = await api.post("/api/group/join", { key: session.key, code: raw });
+    const r = await api.post("/api/group/join", { key: session.key, sessionId: session.sessionId, code: raw });
     setBusy(false);
     if (r && r.ok) return onJoined(r.group);
     if (r && r.error === "banned") return setErr("You've been removed from this community and can't rejoin.");
@@ -290,7 +300,7 @@ function GroupApp({ session, group, setGroup, tab, setTab, onLeave, onLogout }) 
         <button style={{ ...S.tab, ...(tab === "forum" ? S.tabActive : {}) }} onClick={() => setTab("forum")}><MapPin size={16} /> Forum</button>
       </div>
       {tab === "general"
-        ? <GeneralChat session={session} group={group} me={me} isAdmin={isAdmin} mutes={mutes} onToggleMute={toggleMute} />
+        ? <GeneralChat session={session} group={group} me={me} isAdmin={isAdmin} mutes={mutes} onToggleMute={toggleMute} onGroupChange={reloadGroup} />
         : <Forum session={session} group={group} me={me} isAdmin={isAdmin} mutes={mutes} />}
       {showInvite && <InviteModal group={group} session={session} onClose={() => setShowInvite(false)} onChange={reloadGroup} />}
       {showAdmin && isAdmin && <AdminModal session={session} group={group} isOwner={isOwner} onClose={() => setShowAdmin(false)} onChange={reloadGroup} onDeleted={onLeave} />}
@@ -305,7 +315,7 @@ function UsernamePicker({ session, group, onSet, onLeave }) {
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
   const submit = async () => {
     setBusy(true); setErr("");
-    const r = await api.post("/api/group/claimname", { key: session.key, gid: group.id, username: name.trim() });
+    const r = await api.post("/api/group/claimname", { key: session.key, sessionId: session.sessionId, gid: group.id, username: name.trim() });
     setBusy(false);
     if (r && r.ok) return onSet(r.group);
     if (r && r.error === "taken") return setErr("That username is unavailable in this community.");
@@ -331,15 +341,10 @@ function ChangeNameModal({ session, group, me, onClose, onChanged }) {
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
   const submit = async () => {
     setBusy(true); setErr("");
-    const r = await api.post("/api/group/claimname", { key: session.key, gid: group.id, username: name.trim() });
+    // The rename notice is written server-side, so it can't be forged or skipped.
+    const r = await api.post("/api/group/claimname", { key: session.key, sessionId: session.sessionId, gid: group.id, username: name.trim() });
     setBusy(false);
-    if (r && r.ok) {
-      if (r.changedFrom) {
-        const id = uid(), ts = now();
-        await sset(`${msgPrefix(group.id)}${ts}:${id}`, { id, ts, system: true, text: `${r.changedFrom} changed their name to ${name.trim()}` });
-      }
-      onChanged(r.group); onClose(); return;
-    }
+    if (r && r.ok) { onChanged(r.group); onClose(); return; }
     if (r && r.error === "taken") return setErr("That username is unavailable in this community.");
     if (r && r.error === "cooldown") return setErr(`You can change your name again in ${r.daysLeft} day(s).`);
     if (r && r.error === "invalid") return setErr("Pick a name up to 24 characters.");
@@ -379,28 +384,49 @@ function useMutes(gid, meKey) {
   return [mutes, toggle];
 }
 
+// A small built-in emoji palette — emoji are just text, so they travel through
+// the same authenticated send path as any other message.
+const EMOJI = ["😀","😄","😂","🥹","😊","😍","😎","🤔","😅","😉","🙃","😴","😢","😭","😡","🤯","👍","👎","👏","🙌","🙏","💪","🤝","👋","✌️","🤞","❤️","🧡","💚","💙","🔥","✨","🎉","🎂","☕","🍕","⚽","🎮","🎵","📷","✅","❌","⚠️","🎯","💡","🚀","🌧️","🌞"];
+
 function Composer({ me, onSend, placeholder }) {
   const [text, setText] = useState("");
   const [anonOverride, setAnonOverride] = useState(null);
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  const inputRef = useRef(null);
   const anon = !!anonOverride;
-  const send = () => { if (!text.trim()) return; onSend(text.trim(), anon); setText(""); };
+  const send = () => { if (!text.trim()) return; onSend(text.trim(), anon); setText(""); setEmojiOpen(false); };
+  const addEmoji = (e) => { setText((t) => t + e); if (inputRef.current) inputRef.current.focus(); };
+  useEffect(() => {
+    if (!emojiOpen) return;
+    const close = () => setEmojiOpen(false);
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  }, [emojiOpen]);
   return <div style={S.composer}>
+    {emojiOpen && <div data-role="emoji-panel" style={S.emojiPanel} onClick={(e) => e.stopPropagation()}>
+      {EMOJI.map((e) => <button key={e} style={S.emojiBtn} onClick={() => addEmoji(e)}>{e}</button>)}
+    </div>}
     <button style={{ ...S.iconBtn, color: anon ? "#2dd4bf" : "#9fb0bd" }} title={anon ? "Sending anonymously" : "Sending as " + me.username} onClick={() => setAnonOverride(!anon)}>{anon ? <EyeOff size={20} /> : <Eye size={20} />}</button>
-    <input style={S.composerInput} value={text} placeholder={placeholder} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") send(); }} />
+    <button style={{ ...S.iconBtn, color: emojiOpen ? ACCENT : "#9fb0bd" }} title="Emoji" onClick={(e) => { e.stopPropagation(); setEmojiOpen((v) => !v); }}><Smile size={20} /></button>
+    <input ref={inputRef} style={S.composerInput} value={text} placeholder={placeholder} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") send(); }} />
     <button style={S.sendBtn} onClick={send}><Send size={18} /></button>
   </div>;
 }
 
 const senderLabel = (m) => m.system ? null : (m.anon ? anonLabel((m.author || "x") + (m.gid || "")) : m.authorName);
 
-function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute }) {
+function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroupChange }) {
   const prefix = msgPrefix(group.id);
   const [items, reload] = useItems(prefix);
   const [query, setQuery] = useState("");
+  const [results, setResults] = useState(null);
   const [replyTo, setReplyTo] = useState(null);
   const [menuFor, setMenuFor] = useState(null);
   const [threadRoot, setThreadRoot] = useState(null);
   const [revealed, setRevealed] = useState(() => new Set());
+  const [pinIdx, setPinIdx] = useState(0);
+  const [highlight, setHighlight] = useState(null);
+  const [jumpTo, setJumpTo] = useState(null);
   const endRef = useRef(null);
   useEffect(() => { endRef.current && endRef.current.scrollIntoView({ behavior: "smooth" }); }, [items.length]);
   // A click anywhere outside an open message menu dismisses it.
@@ -409,6 +435,36 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute }) {
     document.addEventListener("click", close);
     return () => document.removeEventListener("click", close);
   }, []);
+
+  const pins = group.pins || [];
+  useEffect(() => { setPinIdx(0); }, [pins.length]);
+  const trimmed = query.trim();
+  // Search is executed by the server over the group's entire history, so it is
+  // not limited to (or dependent on) what this client has loaded.
+  useEffect(() => {
+    if (!trimmed) { setResults(null); return; }
+    let dead = false;
+    const t = setTimeout(async () => {
+      const r = await messageSearch(session, group.id, trimmed);
+      if (!dead) setResults(r && r.ok ? r.results : []);
+    }, 150);
+    return () => { dead = true; clearTimeout(t); };
+  }, [trimmed, session.key, session.sessionId, group.id]);
+
+  const flash = (id) => { setHighlight(id); setTimeout(() => setHighlight(null), 1800); };
+  const scrollToId = (id) => { const el = document.getElementById("msg-" + id); if (el) { el.scrollIntoView({ behavior: "smooth", block: "center" }); flash(id); } };
+  // After a search result is picked the query clears; scroll once the list is back.
+  useEffect(() => {
+    if (!jumpTo) return;
+    scrollToId(jumpTo);
+    setJumpTo(null);
+  }, [jumpTo, items.length]);
+  const cyclePin = () => {
+    if (!pins.length) return;
+    const next = pins.length > 1 ? (pinIdx + 1) % pins.length : pinIdx;
+    setPinIdx(next);
+    scrollToId(pins[next].id);
+  };
 
   const mutedSet = new Set(mutes || []);
   const byKey = new Map(items.map((m) => [m._key, m]));
@@ -420,39 +476,55 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute }) {
   const descendants = (key) => { const out = []; const seen = new Set([key]); let frontier = [key]; while (frontier.length) { const next = []; for (const fk of frontier) for (const m of items) { if (m.replyTo && m.replyTo.key === fk && !seen.has(m._key)) { seen.add(m._key); out.push(m); next.push(m._key); } } frontier = next; } return out; };
 
   const postMessage = async (text, anon, parent) => {
-    const id = uid(), ts = now();
-    const msg = { id, ts, text, anon, author: session.key, authorName: me.username, gid: group.id };
-    if (parent) msg.replyTo = { key: parent._key, id: parent.id, ts: parent.ts, author: parent.author, authorName: senderLabel(parent), excerpt: excerptOf(parent.text) };
-    await sset(`${prefix}${ts}:${id}`, msg);
+    await messageSend(session, group.id, text, anon, parent ? { key: parent._key } : null);
     reload();
   };
   const send = (text, anon) => { const parent = replyTo; setReplyTo(null); postMessage(text, anon, parent); };
-  const del = async (m) => { await sdelete(m._key); reload(); };
+  const del = async (m) => { await messageDelete(session, group.id, m._key); reload(); };
+  const togglePin = async (m) => {
+    await setPin(session, group.id, m._key, !pins.some((p) => p.key === m._key));
+    if (onGroupChange) onGroupChange();
+  };
   const openThread = (m) => setThreadRoot(rootOf(m));
-  // Case-insensitive search across this group's messages. System notices are
-  // excluded so a search only returns actual conversation.
-  const q = query.trim().toLowerCase();
-  const shown = q ? items.filter((m) => !m.system && (m.text || "").toLowerCase().includes(q)) : items;
+  const pinText = (pin) => { const m = byKey.get(pin.key); return m ? `${senderLabel(m)}: ${excerptOf(m.text)}` : "Deleted message"; };
   return <div style={S.chatArea}>
     <div style={S.searchBar}>
       <Search size={16} style={{ color: "#7b8a96", flexShrink: 0 }} />
-      <input style={S.searchInput} value={query} placeholder="Search messages" onChange={(e) => setQuery(e.target.value)} />
+      <input style={S.searchInput} value={query} placeholder="Search all messages" onChange={(e) => setQuery(e.target.value)} />
       {query && <button style={S.iconBtn} title="Clear search" onClick={() => setQuery("")}><X size={16} /></button>}
     </div>
-    <div style={S.messages}>
-      {shown.length === 0 && <div style={S.empty}><p style={S.muted}>{q ? `No messages match “${query.trim()}”.` : "Be the first to say hello 👋"}</p></div>}
-      {shown.map((m) => {
-        if (m.system) return <div key={m.id} style={S.systemMsg} className="reveal">{m.text}</div>;
+    {!trimmed && pins.length > 0 && <button data-role="pin-bar" style={S.pinBar} onClick={cyclePin} title={pins.length > 1 ? "Pinned messages — tap for the next" : "Pinned message"}>
+      <Pin size={15} style={{ color: ACCENT, flexShrink: 0 }} />
+      <div style={{ flex: 1, minWidth: 0, textAlign: "left" }}>
+        <div style={S.pinBarLabel}>Pinned message{pins.length > 1 ? ` ${pinIdx + 1}/${pins.length}` : ""}</div>
+        <div style={S.pinBarText}>{pinText(pins[pinIdx] || pins[0])}</div>
+      </div>
+    </button>}
+    {trimmed ? <div style={S.messages}>
+      <div style={{ ...S.muted, padding: "2px 4px" }}>{results === null ? "Searching…" : `${results.length} result${results.length === 1 ? "" : "s"} across the whole history`}</div>
+      {results && results.map((r) => <button key={r.key} style={S.result} onClick={() => { setResults(null); setQuery(""); setJumpTo(r.id); }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+          <span style={{ color: SENDER, fontWeight: 600, fontSize: 13 }}>{r.anon ? anonLabel(r.author + group.id) : (r.authorName || "member")}</span>
+          <span style={S.time}>{fmtTime(r.ts)}</span>
+        </div>
+        <div style={S.resultText}>{r.text}</div>
+      </button>)}
+      {results && results.length === 0 && <div style={S.empty}><p style={S.muted}>No messages match “{trimmed}”.</p></div>}
+    </div> : <div style={S.messages}>
+      {items.length === 0 && <div style={S.empty}><p style={S.muted}>Be the first to say hello 👋</p></div>}
+      {items.map((m) => {
+        if (m.system) return <div key={m.id} id={"msg-" + m.id} style={S.systemMsg} className="reveal">{m.text}</div>;
         const mine = m.author === session.key;
         const isMuted = mutedSet.has(m.author);
         const inChain = references.has(m._key) || !!m.replyTo;
+        const pinned = pins.some((p) => p.key === m._key);
         // A muted author's messages leave the room — unless someone replied to
         // them (or they reply to something), when they stay in the chain as a
         // collapsed placeholder the reader can reveal.
         if (isMuted && !inChain) return null;
         if (isMuted && !revealed.has(m._key)) {
-          return <div key={m.id} style={{ ...S.bubbleRow, justifyContent: mine ? "flex-end" : "flex-start" }} className="reveal">
-            <div style={{ ...S.bubble, ...(mine ? S.bubbleMine : {}), ...S.mutedBubble }}>
+          return <div key={m.id} id={"msg-" + m.id} style={{ ...S.bubbleRow, justifyContent: mine ? "flex-end" : "flex-start" }} className="reveal">
+            <div style={{ ...S.bubble, ...(mine ? S.bubbleMine : {}), ...S.mutedBubble, ...(highlight === m.id ? S.bubbleFlash : {}) }}>
               <div style={S.bubbleHead}>
                 <span style={{ color: MUTED, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 }}><BellOff size={11} /> Muted message</span>
                 <span style={S.time}>{fmtTime(m.ts)}</span>
@@ -464,38 +536,39 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute }) {
         }
         const root = rootOf(m);
         const hasThread = !!root && descendants(root._key).length > 0;
-        return <div key={m.id} style={{ ...S.bubbleRow, justifyContent: mine ? "flex-end" : "flex-start" }} className="reveal">
-          <div style={{ ...S.bubble, ...(mine ? S.bubbleMine : {}) }}>
+        return <div key={m.id} id={"msg-" + m.id} style={{ ...S.bubbleRow, justifyContent: mine ? "flex-end" : "flex-start" }} className="reveal">
+          <div style={{ ...S.bubble, ...(mine ? S.bubbleMine : {}), ...(highlight === m.id ? S.bubbleFlash : {}) }}>
             <div style={S.bubbleHead}>
               <span style={{ color: SENDER, fontWeight: 600 }}>{m.anon && <EyeOff size={11} style={{ verticalAlign: -1, marginRight: 3 }} />}{senderLabel(m)}</span>
+              {pinned && <Pin size={11} style={{ color: ACCENT, flexShrink: 0 }} />}
               <span style={S.time}>{fmtTime(m.ts)}</span>
               <button style={S.miniDel} title="Message options" onClick={(e) => { e.stopPropagation(); setMenuFor((v) => (v === m.id ? null : m.id)); }}><MoreVertical size={14} /></button>
             </div>
-            {menuFor === m.id && <MsgMenu mine={mine} isAdmin={isAdmin} hasThread={hasThread} muted={isMuted}
+            {menuFor === m.id && <MsgMenu mine={mine} isAdmin={isAdmin} hasThread={hasThread} muted={isMuted} pinned={pinned}
               onClose={() => setMenuFor(null)} onReply={() => setReplyTo(m)} onThread={() => openThread(m)}
-              onToggleMute={() => onToggleMute(m.author)} onDelete={() => del(m)} />}
+              onToggleMute={() => onToggleMute(m.author)} onTogglePin={() => togglePin(m)} onDelete={() => del(m)} />}
             {m.replyTo && <ReplyPreview replyTo={m.replyTo} byKey={byKey} mutedSet={mutedSet} revealed={revealed} onReveal={reveal} />}
             <div>{m.text}</div>
           </div>
         </div>;
       })}
       <div ref={endRef} />
-    </div>
+    </div>}
     {replyTo && <div style={S.replyBanner}>
       <CornerUpLeft size={14} style={{ flexShrink: 0, color: ACCENT }} />
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={S.replyBannerName}>Replying to {replyTo.authorName || "message"}</div>
+        <div style={S.replyBannerName}>Replying to {senderLabel(replyTo) || "message"}</div>
         <div style={S.replyBannerText}>{excerptOf(replyTo.text)}</div>
       </div>
       <button style={S.iconBtn} title="Cancel reply" onClick={() => setReplyTo(null)}><X size={16} /></button>
     </div>}
     <Composer me={me} onSend={send} placeholder="Message the whole community…" />
-    {threadRoot && <ThreadModal root={threadRoot} items={items} me={me} onClose={() => setThreadRoot(null)} onReply={(t, a) => postMessage(t, a, threadRoot)} />}
+    {threadRoot && <ThreadModal root={threadRoot} items={items} byKey={byKey} me={me} onClose={() => setThreadRoot(null)} onReply={(t, a) => postMessage(t, a, threadRoot)} />}
   </div>;
 }
 
 // The per-message menu (opened from the ⋮ button in a bubble's header).
-function MsgMenu({ mine, isAdmin, hasThread, muted, onClose, onReply, onThread, onToggleMute, onDelete }) {
+function MsgMenu({ mine, isAdmin, hasThread, muted, pinned, onClose, onReply, onThread, onToggleMute, onTogglePin, onDelete }) {
   const item = (icon, label, onClick, danger) => (
     <button key={label} style={{ ...S.menuItem, ...(danger ? S.menuItemDanger : {}) }}
       onClick={(e) => { e.stopPropagation(); onClose(); onClick(); }}>{icon}<span>{label}</span></button>
@@ -503,6 +576,7 @@ function MsgMenu({ mine, isAdmin, hasThread, muted, onClose, onReply, onThread, 
   return <div style={S.menu} onClick={(e) => e.stopPropagation()}>
     {item(<CornerUpLeft size={15} />, "Reply", onReply)}
     {hasThread && item(<MessageSquare size={15} />, "View message thread", onThread)}
+    {isAdmin && item(pinned ? <PinOff size={15} /> : <Pin size={15} />, pinned ? "Unpin message" : "Pin message", onTogglePin)}
     {!mine && item(muted ? <BellOff size={15} /> : <Bell size={15} />, muted ? "Unmute user" : "Mute user", onToggleMute)}
     {(mine || isAdmin) && item(<Trash2 size={15} />, "Delete message", onDelete, true)}
   </div>;
@@ -510,8 +584,10 @@ function MsgMenu({ mine, isAdmin, hasThread, muted, onClose, onReply, onThread, 
 
 // Telegram-style "in reply to" preview above a message's text.
 function ReplyPreview({ replyTo, byKey, mutedSet, revealed, onReveal }) {
+  // The stored reply only carries the parent's key/author, so the name and
+  // excerpt always come from the live message (and stay "Deleted" if it's gone).
   const parent = byKey.get(replyTo.key);
-  const hiddenMuted = !!parent && mutedSet.has(replyTo.author) && !revealed.has(replyTo.key);
+  const hiddenMuted = !!parent && mutedSet.has(parent.author) && !revealed.has(replyTo.key);
   return <div data-role="reply-preview" data-muted={hiddenMuted ? "1" : "0"}
     style={{ ...S.replyPreview, ...(hiddenMuted ? S.replyPreviewMuted : {}) }}
     onClick={hiddenMuted ? () => onReveal(replyTo.key) : undefined}
@@ -522,14 +598,14 @@ function ReplyPreview({ replyTo, byKey, mutedSet, revealed, onReveal }) {
         ? <div style={{ ...S.replyPreviewName, color: MUTED, fontStyle: "italic" }}>Deleted</div>
         : hiddenMuted
           ? <div style={{ ...S.replyPreviewName, color: MUTED }}>Muted — tap to show</div>
-          : <div style={S.replyPreviewName}>{replyTo.authorName || "message"}</div>}
-      {parent && !hiddenMuted && <div style={S.replyPreviewText}>{replyTo.excerpt}</div>}
+          : <div style={S.replyPreviewName}>{senderLabel(parent)}</div>}
+      {parent && !hiddenMuted && <div style={S.replyPreviewText}>{excerptOf(parent.text)}</div>}
     </div>
   </div>;
 }
 
 // A whole reply chain, opened by "View message thread".
-function ThreadModal({ root, items, me, onClose, onReply }) {
+function ThreadModal({ root, items, byKey, me, onClose, onReply }) {
   const chain = [];
   const seen = new Set([root._key]); let frontier = [root._key];
   while (frontier.length) {
@@ -548,7 +624,7 @@ function ThreadModal({ root, items, me, onClose, onReply }) {
           <span style={S.time}>{fmtTime(m.ts)}</span>
           {i === 0 && <span style={{ ...S.pill, background: "#2dd4bf22", color: ACCENT, marginLeft: "auto" }}>ORIGINAL</span>}
         </div>
-        {m.replyTo && <div style={{ fontSize: 11, color: MUTED, marginBottom: 2 }}>↩ {m.replyTo.authorName || "message"}</div>}
+        {m.replyTo && <div style={{ fontSize: 11, color: MUTED, marginBottom: 2 }}>↩ {(() => { const par = byKey && byKey.get(m.replyTo.key); return par ? senderLabel(par) : "Deleted"; })()}</div>}
         <div style={{ fontSize: 14 }}>{m.text}</div>
       </div>)}
     </div>
@@ -560,11 +636,10 @@ function Forum({ session, group, me, isAdmin, mutes }) {
   const prefix = postPrefix(group.id);
   const [items, reload] = useItems(prefix, 3000);
   const [composing, setComposing] = useState(false);
-  const post = async (title, body, anon) => { const id = uid(), ts = now(); await sset(`${prefix}${ts}:${id}`, { id, ts, title, text: body, anon, author: session.key, authorName: me.username, gid: group.id, replies: [] }); reload(); };
-  const del = async (p) => { await sdelete(p._key); reload(); };
-  const stripKey = (o) => { const { _key, ...r } = o; return r; };
-  const addReply = async (p, text, anon) => { const reply = { id: uid(), ts: now(), text, anon, author: session.key, authorName: me.username, gid: group.id }; await sset(p._key, stripKey({ ...p, replies: [...(p.replies || []), reply] })); reload(); };
-  const delReply = async (p, rid) => { await sset(p._key, stripKey({ ...p, replies: (p.replies || []).filter((r) => r.id !== rid) })); reload(); };
+  const post = async (title, body, anon) => { await postCreate(session, group.id, title, body, anon); reload(); };
+  const del = async (p) => { await postDelete(session, group.id, p._key); reload(); };
+  const addReply = async (p, text, anon) => { await postReply(session, group.id, p._key, text, anon); reload(); };
+  const delReply = async (p, rid) => { await postDeleteReply(session, group.id, p._key, rid); reload(); };
   // A muted member's posts never reach the forum for the person who muted them.
   const mutedSet = new Set(mutes || []);
   const sorted = items.filter((p) => !mutedSet.has(p.author)).sort((a, b) => b.ts - a.ts);
@@ -629,7 +704,7 @@ function InviteModal({ group, session, onClose, onChange }) {
   const copy = async (which, text) => { await copyText(text); setCopied(which); setTimeout(() => setCopied(""), 1500); };
   const genOnce = async () => {
     setBusy(true);
-    const r = await api.post("/api/group/invite", { key: session.key, gid: group.id });
+    const r = await api.post("/api/group/invite", { key: session.key, sessionId: session.sessionId, gid: group.id });
     setBusy(false);
     if (r && r.ok) { setOnce(r.code); if (onChange) onChange(); }
   };
@@ -672,18 +747,18 @@ function AdminModal({ session, group, isOwner, onClose, onChange, onDeleted }) {
   const [busyDel, setBusyDel] = useState(false);
   // owner-only permanent ban
   const banUser = async (targetKey) => {
-    await api.post("/api/group/ban", { ownerKey: session.key, gid: group.id, targetKey });
+    await api.post("/api/group/ban", { key: session.key, sessionId: session.sessionId, gid: group.id, targetKey });
     onChange();
   };
   // Both actions are validated server-side; the client can't just rewrite the group doc.
   // admin (non-permanent) remove: just drop membership (can rejoin)
   const removeUser = async (targetKey) => {
     if (targetKey === group.ownerKey) return;
-    await api.post("/api/group/remove", { key: session.key, gid: group.id, targetKey });
+    await api.post("/api/group/remove", { key: session.key, sessionId: session.sessionId, gid: group.id, targetKey });
     onChange();
   };
   const toggleAdmin = async (targetKey) => {
-    await api.post("/api/group/toggleadmin", { key: session.key, gid: group.id, targetKey });
+    await api.post("/api/group/toggleadmin", { key: session.key, sessionId: session.sessionId, gid: group.id, targetKey });
     onChange();
   };
   return <Modal onClose={onClose} title="Manage members">
@@ -716,7 +791,7 @@ function AdminModal({ session, group, isOwner, onClose, onChange, onDeleted }) {
               <button style={{ ...S.secondaryFull, flex: 1 }} disabled={busyDel} onClick={() => setConfirmDel(false)}>Cancel</button>
               <button style={{ ...S.dangerBtn, flex: 1 }} disabled={busyDel} onClick={async () => {
                 setBusyDel(true);
-                const r = await api.post("/api/group/delete", { ownerKey: session.key, gid: group.id });
+                const r = await api.post("/api/group/delete", { key: session.key, sessionId: session.sessionId, gid: group.id });
                 setBusyDel(false);
                 if (r && r.ok) { onClose(); onDeleted(); }
               }}>{busyDel ? "Deleting…" : "Yes, delete forever"}</button>
@@ -788,7 +863,15 @@ const S = {
   segment: { display: "flex", gap: 4, padding: 4, background: PANEL2, border: `1px solid ${LINE}`, borderRadius: 12, marginBottom: 12 },
   segBtn: { flex: 1, background: "transparent", border: "none", color: MUTED, padding: "9px 6px", borderRadius: 9, cursor: "pointer", fontWeight: 600, fontSize: 13, fontFamily: "inherit" },
   segBtnActive: { background: PANEL, color: TEXT },
-  composer: { display: "flex", gap: 8, padding: 12, borderTop: `1px solid ${LINE}`, background: PANEL, alignItems: "center" },
+  composer: { position: "relative", display: "flex", gap: 8, padding: 12, borderTop: `1px solid ${LINE}`, background: PANEL, alignItems: "center" },
+  emojiPanel: { position: "absolute", bottom: 58, left: 8, right: 8, zIndex: 40, display: "grid", gridTemplateColumns: "repeat(8, 1fr)", gap: 2, padding: 8, background: "#0f1620", border: `1px solid ${LINE}`, borderRadius: 14, boxShadow: "0 12px 32px rgba(0,0,0,.55)", maxHeight: 200, overflowY: "auto" },
+  emojiBtn: { background: "transparent", border: "none", cursor: "pointer", fontSize: 20, lineHeight: 1, padding: 4, borderRadius: 8, fontFamily: "inherit" },
+  pinBar: { display: "flex", alignItems: "center", gap: 9, width: "100%", textAlign: "left", padding: "8px 14px", background: "#0f1620", border: "none", borderBottom: `1px solid ${LINE}`, color: TEXT, cursor: "pointer", fontFamily: "inherit" },
+  pinBarLabel: { fontSize: 10, fontWeight: 700, color: ACCENT, textTransform: "uppercase", letterSpacing: .6 },
+  pinBarText: { fontSize: 13, color: MUTED, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  result: { display: "flex", flexDirection: "column", gap: 3, width: "100%", textAlign: "left", background: PANEL, border: `1px solid ${LINE}`, borderRadius: 12, padding: "10px 12px", color: TEXT, cursor: "pointer", fontFamily: "inherit" },
+  resultText: { fontSize: 14, color: "#cdd9e1", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  bubbleFlash: { boxShadow: `0 0 0 2px ${ACCENT}` },
   composerInput: { flex: 1, background: PANEL2, border: `1px solid ${LINE}`, color: TEXT, borderRadius: 22, padding: "11px 16px", outline: "none", fontSize: 15, fontFamily: "inherit" },
   sendBtn: { background: ACCENT, color: "#04201d", border: "none", borderRadius: "50%", width: 42, height: 42, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
   post: { background: PANEL, border: `1px solid ${LINE}`, borderRadius: 16, padding: 14 },
