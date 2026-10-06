@@ -4,7 +4,9 @@ A group + neighborhood chat PWA. Accounts are anonymous login **keys** (no
 email/password). Usernames are chosen per community and reserved permanently.
 No private user-to-user messaging.
 
-Everything is bundled — no build step. You only need **Node.js** (v16+).
+Running the app needs only **Node.js** (v16+). Editing the UI needs a
+[build step](HANDOFF.md): `src/app.src.jsx` is the source and
+`public/app.js` is the generated file the browser loads.
 
 ## Run it
 
@@ -12,6 +14,16 @@ Everything is bundled — no build step. You only need **Node.js** (v16+).
 
 The terminal prints a `localhost` URL (this device) and a `192.168.x.x` URL
 (open on a phone on the same Wi-Fi). Data is stored in `data.json`.
+
+## Develop the UI
+
+    bun install          # installs esbuild + jsdom (dev only)
+    bun run build        # regenerates public/app.js from src/app.src.jsx
+    bun run build:watch  # rebuild on save
+
+Run `node tools/smoke.mjs` and `node tools/render-test.mjs` (against a running
+server) to check the API and the rendered UI. See **HANDOFF.md** for the full
+architecture, API reference, and known issues.
 
 ## How accounts work
 

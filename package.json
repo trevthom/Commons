@@ -1,0 +1,15 @@
+{
+  "name": "commons",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Commons — group & neighborhood chat PWA. Zero runtime dependencies.",
+  "scripts": {
+    "start": "node server.js",
+    "build": "esbuild src/app.src.jsx --outfile=public/app.js --loader:.jsx=jsx --jsx=transform --jsx-factory=React.createElement --jsx-fragment=React.Fragment",
+    "build:watch": "esbuild src/app.src.jsx --outfile=public/app.js --loader:.jsx=jsx --jsx=transform --jsx-factory=React.createElement --jsx-fragment=React.Fragment --watch"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "jsdom": "^30.1.2"
+  }
+}
