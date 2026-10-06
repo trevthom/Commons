@@ -66,26 +66,67 @@ const postDelete = (s, gid, postKey) => api.post("/api/post/delete", auth(s, { g
 const postReply = (s, gid, postKey, text, anon) => api.post("/api/post/reply", auth(s, { gid, postKey, text, anon }));
 const postDeleteReply = (s, gid, postKey, replyId) => api.post("/api/post/deleteReply", auth(s, { gid, postKey, replyId }));
 const setPin = (s, gid, msgKey, on) => api.post(on ? "/api/group/pin" : "/api/group/unpin", auth(s, { gid, msgKey }));
-const slistValues = async (prefix) => {
-  const j = await api.get("/api/mget?prefix=" + encodeURIComponent(prefix));
+const slistValues = async (prefix, since) => {
+  const j = await api.get("/api/mget?prefix=" + encodeURIComponent(prefix) + (since ? "&since=" + since : ""));
   if (!j || !j.items) return [];
   return j.items.map(([k, v]) => ({ ...v, _key: k }));
 };
+const roomCache = /* @__PURE__ */ new Map();
+const roomFullAt = /* @__PURE__ */ new Map();
+const ROOM_FULL_MS = 2e4;
+const sigOf = (list) => list && list.length ? list.length + ":" + list[0]._key + ":" + list[list.length - 1]._key : "0";
+const mergeItems = (base, delta) => {
+  const byKey = new Map(base.map((m) => [m._key, m]));
+  for (const m of delta) byKey.set(m._key, m);
+  return [...byKey.values()].sort((a, b) => a.ts - b.ts);
+};
+async function syncRoom(prefix, forceFull) {
+  const cached = roomCache.get(prefix) || [];
+  const full = forceFull || !cached.length || Date.now() - (roomFullAt.get(prefix) || 0) > ROOM_FULL_MS;
+  const fetched = await slistValues(prefix, full ? 0 : cached[cached.length - 1].ts);
+  const next = (full ? fetched : mergeItems(cached, fetched)).sort((a, b) => a.ts - b.ts);
+  roomCache.set(prefix, next);
+  if (full) roomFullAt.set(prefix, Date.now());
+  return next;
+}
 const SK = "cc_session_v2";
-const loadSession = () => {
+const readSession = (store) => {
   try {
-    return JSON.parse(sessionStorage.getItem(SK)) || null;
+    return JSON.parse(store.getItem(SK)) || null;
   } catch {
     return null;
   }
 };
-const saveSession = (s) => {
+const loadSession = () => {
   try {
-    sessionStorage.setItem(SK, JSON.stringify(s));
+    const local = readSession(localStorage);
+    if (local) return local;
+    const tab = readSession(sessionStorage);
+    if (tab) {
+      localStorage.setItem(SK, JSON.stringify(tab));
+      sessionStorage.removeItem(SK);
+      return tab;
+    }
   } catch {
+  }
+  return null;
+};
+const saveSession = (s) => {
+  const v = JSON.stringify(s);
+  try {
+    localStorage.setItem(SK, v);
+  } catch {
+    try {
+      sessionStorage.setItem(SK, v);
+    } catch {
+    }
   }
 };
 const clearSession = () => {
+  try {
+    localStorage.removeItem(SK);
+  } catch {
+  }
   try {
     sessionStorage.removeItem(SK);
   } catch {
@@ -167,8 +208,8 @@ function QRCodeView({ text, size = 200 }) {
   return /* @__PURE__ */ React.createElement("div", { ref, style: { borderRadius: 12, overflow: "hidden", lineHeight: 0 } });
 }
 function CommunityChat() {
-  const [session, setSession] = useState(loadSession());
-  const [view, setView] = useState("loading");
+  const [session, setSession] = useState(loadSession);
+  const [view, setView] = useState(() => session ? "home" : "login");
   const [group, setGroup] = useState(null);
   const [tab, setTab] = useState("general");
   const [pendingInvite, setPendingInvite] = useState(null);
@@ -184,20 +225,19 @@ function CommunityChat() {
   useEffect(() => {
     const m = (window.location.hash || "").match(/join=([A-Za-z0-9_-]+)/);
     if (m) setPendingInvite(m[1]);
-    const s = loadSession();
-    setView(s ? "home" : "login");
   }, []);
   useEffect(() => {
     if (!session) return;
     let stop = false;
     const check = async () => {
       const r = await api.get(`/api/account/session?key=${encodeURIComponent(session.key)}&sessionId=${encodeURIComponent(session.sessionId)}`);
-      if (!stop && r && r.valid === false) {
-        setKicked(true);
-        setSess(null);
-        setGroup(null);
-        setView("login");
-      }
+      if (stop || !r || r.valid !== false) return;
+      const stored = loadSession();
+      if (stored && stored.key === session.key && stored.sessionId !== session.sessionId) return setSess(stored);
+      setKicked(true);
+      setSess(null);
+      setGroup(null);
+      setView("login");
     };
     const t = setInterval(check, 4e3);
     check();
@@ -206,7 +246,18 @@ function CommunityChat() {
       clearInterval(t);
     };
   }, [session]);
-  return /* @__PURE__ */ React.createElement("div", { style: S.root }, /* @__PURE__ */ React.createElement("style", null, CSS), view === "loading" && /* @__PURE__ */ React.createElement("div", { style: S.center }, /* @__PURE__ */ React.createElement("div", { className: "pulse", style: { fontSize: 40 } }, "\u25C7")), view === "login" && /* @__PURE__ */ React.createElement(Login, { kicked, clearKicked: () => setKicked(false), onAuthed: (s) => {
+  useEffect(() => {
+    const onStorage = (e) => {
+      if (e.key === SK && !loadSession()) {
+        setSess(null);
+        setGroup(null);
+        setView("login");
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+  return /* @__PURE__ */ React.createElement("div", { style: S.root }, /* @__PURE__ */ React.createElement("style", null, CSS), view === "login" && /* @__PURE__ */ React.createElement(Login, { kicked, clearKicked: () => setKicked(false), onAuthed: (s) => {
     setSess(s);
     setView("home");
   } }), view === "home" && session && /* @__PURE__ */ React.createElement(Home, { session, pendingInvite, clearInvite: () => setPendingInvite(null), onOpen: (g) => {
@@ -272,22 +323,31 @@ function Home({ session, pendingInvite, clearInvite, onOpen, onLogout }) {
   const [joining, setJoining] = useState(false);
   const [newName, setNewName] = useState("");
   const [inbox, setInbox] = useState({});
+  const groupsSig = useRef("");
+  const inboxSig = useRef("");
   const refresh = useCallback(async () => {
     const all = await slistValues("group:");
     const gs = all.filter((g) => g && g.members && g.members[session.key] && !(g.banned || []).includes(session.key));
     gs.sort((a, b) => b.createdAt - a.createdAt);
-    setGroups(gs);
+    const gsig = JSON.stringify(gs);
+    if (gsig !== groupsSig.current) {
+      groupsSig.current = gsig;
+      setGroups(gs);
+    }
     const next = {};
     await Promise.all(gs.map(async (g) => {
-      const msgs = await slistValues(msgPrefix(g.id));
-      msgs.sort((a, b) => a.ts - b.ts);
+      const msgs = await syncRoom(msgPrefix(g.id));
       const member = g.members[session.key];
       const seen = getSeen(g.id, session.key) || member && member.joinedAt || 0;
       const unread = msgs.filter((m) => !m.system && m.author !== session.key && m.ts > seen).length;
       const last = msgs.length ? msgs[msgs.length - 1] : null;
       next[g.id] = { unread, preview: last ? previewOf(last, session.key) : "" };
     }));
-    setInbox(next);
+    const isig = JSON.stringify(next);
+    if (isig !== inboxSig.current) {
+      inboxSig.current = isig;
+      setInbox(next);
+    }
   }, [session.key]);
   useEffect(() => {
     refresh();
@@ -308,9 +368,8 @@ function Home({ session, pendingInvite, clearInvite, onOpen, onLogout }) {
     onOpen(r.group);
   };
   return /* @__PURE__ */ React.createElement("div", { style: S.screen }, /* @__PURE__ */ React.createElement("div", { style: S.appHeader }, /* @__PURE__ */ React.createElement("div", { style: { flex: 1, fontWeight: 700, fontSize: 18 } }, "Your communities"), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Log out", onClick: onLogout }, /* @__PURE__ */ React.createElement(LogOut, { size: 18 }))), /* @__PURE__ */ React.createElement("div", { style: S.scroll }, groups.length === 0 && /* @__PURE__ */ React.createElement("div", { style: S.empty, className: "reveal" }, /* @__PURE__ */ React.createElement(Users, { size: 34, style: { opacity: 0.5 } }), /* @__PURE__ */ React.createElement("p", null, "No communities yet."), /* @__PURE__ */ React.createElement("p", { style: S.muted }, "Create one or join with an invite.")), groups.map((g) => {
-    const me = g.members[session.key];
     const info = inbox[g.id] || {};
-    return /* @__PURE__ */ React.createElement("button", { key: g.id, "data-role": "group-card", style: S.groupCard, className: "reveal", onClick: () => onOpen(g) }, /* @__PURE__ */ React.createElement("div", { style: S.groupAvatar }, g.name.slice(0, 1).toUpperCase()), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0, textAlign: "left" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 600 } }, g.name), g.ownerKey === session.key ? /* @__PURE__ */ React.createElement(Crown, { size: 14, color: "#fbbf24" }) : (g.admins || []).includes(session.key) ? /* @__PURE__ */ React.createElement(Shield, { size: 13, color: "#7dd3fc" }) : null), /* @__PURE__ */ React.createElement("div", { style: { ...S.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, info.preview || `${Object.keys(g.members).length} member(s)${me && me.username ? " \xB7 " + me.username : " \xB7 pick a name"}`)), info.unread > 0 && /* @__PURE__ */ React.createElement("span", { "data-role": "unread-badge", style: S.badge }, info.unread > 99 ? "99+" : info.unread));
+    return /* @__PURE__ */ React.createElement("button", { key: g.id, "data-role": "group-card", style: S.groupCard, className: "reveal", onClick: () => onOpen(g) }, /* @__PURE__ */ React.createElement("div", { style: S.groupAvatar }, g.name.slice(0, 1).toUpperCase()), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0, textAlign: "left" } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, g.name), /* @__PURE__ */ React.createElement("div", { style: { ...S.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, info.preview || "No messages yet")), info.unread > 0 && /* @__PURE__ */ React.createElement("span", { "data-role": "unread-badge", style: S.badge }, info.unread > 99 ? "99+" : info.unread));
   })), /* @__PURE__ */ React.createElement("div", { style: S.bottomBar }, /* @__PURE__ */ React.createElement("button", { style: S.secondary, onClick: () => setJoining(true) }, /* @__PURE__ */ React.createElement(LogIn, { size: 18 }), " Join"), /* @__PURE__ */ React.createElement("button", { style: S.primary, onClick: () => setCreating(true) }, /* @__PURE__ */ React.createElement(Plus, { size: 18 }), " Create")), creating && /* @__PURE__ */ React.createElement(Modal, { onClose: () => setCreating(false), title: "Create community" }, /* @__PURE__ */ React.createElement("label", { style: S.label }, "Community name"), /* @__PURE__ */ React.createElement("input", { style: S.input, value: newName, onChange: (e) => setNewName(e.target.value), onKeyDown: onEnter(createGroup), placeholder: "Oak Street Neighbors", maxLength: 40 }), /* @__PURE__ */ React.createElement("button", { style: { ...S.primary, marginTop: 16, opacity: newName.trim() ? 1 : 0.5 }, disabled: !newName.trim(), onClick: createGroup }, "Create")), joining && /* @__PURE__ */ React.createElement(JoinModal, { session, prefill: pendingInvite, onClose: () => {
     setJoining(false);
     clearInvite();
@@ -350,8 +409,10 @@ function GroupApp({ session, group, setGroup, tab, setTab, onLeave, onLogout }) 
   const me = group.members[session.key];
   const isOwner = group.ownerKey === session.key;
   const isAdmin = isOwner || (group.admins || []).includes(session.key);
+  const memberCount = Object.keys(group.members).length;
   const needsName = !me || !me.username;
   const [mutes, toggleMute] = useMutes(group.id, session.key);
+  const lastGroup = useRef("");
   const reloadGroup = useCallback(async () => {
     const g = await sget(groupKey(group.id));
     if (!g) return;
@@ -359,14 +420,18 @@ function GroupApp({ session, group, setGroup, tab, setTab, onLeave, onLogout }) 
       onLeave();
       return;
     }
-    setGroup(g);
+    const sig = JSON.stringify(g);
+    if (sig !== lastGroup.current) {
+      lastGroup.current = sig;
+      setGroup(g);
+    }
   }, [group.id, session.key, setGroup, onLeave]);
   useEffect(() => {
     const t = setInterval(reloadGroup, 3e3);
     return () => clearInterval(t);
   }, [reloadGroup]);
   if (needsName) return /* @__PURE__ */ React.createElement(UsernamePicker, { session, group, onSet: (g) => setGroup(g), onLeave });
-  return /* @__PURE__ */ React.createElement("div", { style: S.screen }, /* @__PURE__ */ React.createElement("div", { style: S.appHeader }, /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Back to your communities", onClick: onLeave }, /* @__PURE__ */ React.createElement(ChevronLeft, { size: 20 })), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700 } }, group.name), /* @__PURE__ */ React.createElement("button", { style: S.nameBtn, title: "Change your username", onClick: () => setChangingName(true) }, me.username, isOwner ? " \xB7 owner" : isAdmin ? " \xB7 admin" : "", " \u270E")), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Invite people", onClick: () => setShowInvite(true) }, /* @__PURE__ */ React.createElement(QrCode, { size: 18 })), isAdmin && /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Manage members", onClick: () => setShowAdmin(true) }, /* @__PURE__ */ React.createElement(Shield, { size: 18 })), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Log out", onClick: onLogout }, /* @__PURE__ */ React.createElement(LogOut, { size: 18 }))), /* @__PURE__ */ React.createElement("div", { style: S.tabs }, /* @__PURE__ */ React.createElement("button", { style: { ...S.tab, ...tab === "general" ? S.tabActive : {} }, onClick: () => setTab("general") }, /* @__PURE__ */ React.createElement(MessageSquare, { size: 16 }), " General"), /* @__PURE__ */ React.createElement("button", { style: { ...S.tab, ...tab === "forum" ? S.tabActive : {} }, onClick: () => setTab("forum") }, /* @__PURE__ */ React.createElement(MapPin, { size: 16 }), " Forum")), tab === "general" ? /* @__PURE__ */ React.createElement(GeneralChat, { session, group, me, isAdmin, mutes, onToggleMute: toggleMute, onGroupChange: reloadGroup }) : /* @__PURE__ */ React.createElement(Forum, { session, group, me, isAdmin, mutes }), showInvite && /* @__PURE__ */ React.createElement(InviteModal, { group, session, onClose: () => setShowInvite(false), onChange: reloadGroup }), showAdmin && isAdmin && /* @__PURE__ */ React.createElement(AdminModal, { session, group, isOwner, onClose: () => setShowAdmin(false), onChange: reloadGroup, onDeleted: onLeave }), changingName && /* @__PURE__ */ React.createElement(ChangeNameModal, { session, group, me, onClose: () => setChangingName(false), onChanged: (g) => {
+  return /* @__PURE__ */ React.createElement("div", { style: S.screen }, /* @__PURE__ */ React.createElement("div", { style: S.appHeader }, /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Back to your communities", onClick: onLeave }, /* @__PURE__ */ React.createElement(ChevronLeft, { size: 20 })), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0, textAlign: "center", lineHeight: 1.25 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, group.name), /* @__PURE__ */ React.createElement("div", { "data-role": "member-count", style: { ...S.muted, fontSize: 12 } }, memberCount, " member", memberCount === 1 ? "" : "s"), /* @__PURE__ */ React.createElement("button", { style: { ...S.nameBtn, textAlign: "center", maxWidth: "100%", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, title: "Change your username", onClick: () => setChangingName(true) }, me.username, " \u270E", isOwner ? " \xB7 owner" : isAdmin ? " \xB7 admin" : "")), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Invite people", onClick: () => setShowInvite(true) }, /* @__PURE__ */ React.createElement(QrCode, { size: 18 })), isAdmin && /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Manage members", onClick: () => setShowAdmin(true) }, /* @__PURE__ */ React.createElement(Shield, { size: 18 })), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Log out", onClick: onLogout }, /* @__PURE__ */ React.createElement(LogOut, { size: 18 }))), /* @__PURE__ */ React.createElement("div", { style: S.tabs }, /* @__PURE__ */ React.createElement("button", { style: { ...S.tab, ...tab === "general" ? S.tabActive : {} }, onClick: () => setTab("general") }, /* @__PURE__ */ React.createElement(MessageSquare, { size: 16 }), " General"), /* @__PURE__ */ React.createElement("button", { style: { ...S.tab, ...tab === "forum" ? S.tabActive : {} }, onClick: () => setTab("forum") }, /* @__PURE__ */ React.createElement(MapPin, { size: 16 }), " Forum")), tab === "general" ? /* @__PURE__ */ React.createElement(GeneralChat, { session, group, me, isAdmin, mutes, onToggleMute: toggleMute, onGroupChange: reloadGroup }) : /* @__PURE__ */ React.createElement(Forum, { session, group, me, isAdmin, mutes }), showInvite && /* @__PURE__ */ React.createElement(InviteModal, { group, session, onClose: () => setShowInvite(false), onChange: reloadGroup }), showAdmin && isAdmin && /* @__PURE__ */ React.createElement(AdminModal, { session, group, isOwner, onClose: () => setShowAdmin(false), onChange: reloadGroup, onDeleted: onLeave }), changingName && /* @__PURE__ */ React.createElement(ChangeNameModal, { session, group, me, onClose: () => setChangingName(false), onChanged: (g) => {
     setGroup(g);
   } }));
 }
@@ -410,18 +475,43 @@ function ChangeNameModal({ session, group, me, onClose, onChanged }) {
   return /* @__PURE__ */ React.createElement(Modal, { onClose, title: "Change username" }, /* @__PURE__ */ React.createElement("p", { style: S.muted }, "You can change your name once every 60 days. Everyone will see a note that your name changed. Your old name stays reserved to you."), /* @__PURE__ */ React.createElement("label", { style: { ...S.label, marginTop: 12 } }, "New username"), /* @__PURE__ */ React.createElement("input", { style: S.input, value: name, onChange: (e) => setName(e.target.value), onKeyDown: onEnter(submit), maxLength: 24 }), err && /* @__PURE__ */ React.createElement("div", { style: S.error }, err), /* @__PURE__ */ React.createElement("button", { style: { ...S.primary, marginTop: 14, opacity: name.trim() ? 1 : 0.5 }, disabled: !name.trim() || busy, onClick: submit }, busy ? "Saving\u2026" : "Save"));
 }
 function useItems(prefix, ms = 2500) {
-  const [items, setItems] = useState([]);
-  const load = useCallback(async () => {
-    const all = await slistValues(prefix);
-    all.sort((a, b) => a.ts - b.ts);
-    setItems(all);
-  }, [prefix]);
+  const [items, setItems] = useState(() => roomCache.get(prefix) || []);
+  const [ready, setReady] = useState(() => roomCache.has(prefix));
+  const sigRef = useRef(sigOf(roomCache.get(prefix)));
+  const apply = useCallback((list) => {
+    const sig = sigOf(list);
+    if (sig !== sigRef.current) {
+      sigRef.current = sig;
+      setItems(list);
+    }
+  }, []);
+  const reload = useCallback(async () => {
+    apply(await syncRoom(prefix, true));
+  }, [prefix, apply]);
+  const poll = useCallback(async () => {
+    apply(await syncRoom(prefix));
+    setReady(true);
+  }, [prefix, apply]);
   useEffect(() => {
-    load();
-    const t = setInterval(load, ms);
-    return () => clearInterval(t);
-  }, [load, ms]);
-  return [items, load];
+    poll();
+    const t = setInterval(poll, ms);
+    const onVisible = () => {
+      if (!document.hidden) poll();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [poll, ms]);
+  const mutate = useCallback((fn) => {
+    const next = fn(roomCache.get(prefix) || []);
+    if (!next) return;
+    roomCache.set(prefix, next);
+    sigRef.current = sigOf(next);
+    setItems(next);
+  }, [prefix]);
+  return [items, reload, mutate, ready];
 }
 const excerptOf = (t) => String(t || "").replace(/\s+/g, " ").trim().slice(0, 90);
 const seenKey = (gid, meKey) => `cc_seen:${gid}:${meKey}`;
@@ -489,9 +579,11 @@ function Composer({ me, onSend, placeholder }) {
 }
 const senderLabel = (m) => m.system ? null : m.anon ? anonLabel((m.author || "x") + (m.gid || "")) : m.authorName;
 const previewOf = (m, meKey) => m.system ? m.text : `${m.author === meKey ? "You" : senderLabel(m) || "member"}: ${excerptOf(m.text)}`;
+const WINDOW = 150;
 function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroupChange }) {
   const prefix = msgPrefix(group.id);
-  const [items, reload] = useItems(prefix);
+  const [items, reload, mutate, ready] = useItems(prefix);
+  const [shown, setShown] = useState(WINDOW);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState(null);
   const [replyTo, setReplyTo] = useState(null);
@@ -621,8 +713,14 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
     }
     return out;
   };
+  const addLocal = useCallback((m) => mutate((cur) => cur.some((x) => x._key === m._key) ? null : [...cur, m].sort((a, b) => a.ts - b.ts)), [mutate]);
+  const dropLocal = useCallback((key) => mutate((cur) => {
+    const next = cur.filter((m) => m._key !== key);
+    return next.length === cur.length ? null : next;
+  }), [mutate]);
   const postMessage = async (text, anon, parent) => {
-    await messageSend(session, group.id, text, anon, parent ? { key: parent._key } : null);
+    const r = await messageSend(session, group.id, text, anon, parent ? { key: parent._key } : null);
+    if (r && r.ok && r.message) addLocal({ ...r.message, _key: r.key });
     reload();
   };
   const send = (text, anon) => {
@@ -631,7 +729,8 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
     postMessage(text, anon, parent);
   };
   const del = async (m) => {
-    await messageDelete(session, group.id, m._key);
+    const r = await messageDelete(session, group.id, m._key);
+    if (r && r.ok) dropLocal(m._key);
     reload();
   };
   const togglePin = async (m) => {
@@ -643,11 +742,14 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
     const m = byKey.get(pin.key);
     return m ? `${senderLabel(m)}: ${excerptOf(m.text)}` : "Deleted message";
   };
+  const unseenIdx = items.findIndex((m) => !m.system && m.author !== session.key && m.ts > openSeen);
+  const shownCount = Math.max(shown, unseenIdx >= 0 ? items.length - unseenIdx + 20 : 0);
+  const visible = items.length > shownCount ? items.slice(items.length - shownCount) : items;
   return /* @__PURE__ */ React.createElement("div", { style: S.chatArea }, /* @__PURE__ */ React.createElement("div", { style: S.searchBar }, /* @__PURE__ */ React.createElement(Search, { size: 16, style: { color: "#7b8a96", flexShrink: 0 } }), /* @__PURE__ */ React.createElement("input", { style: S.searchInput, value: query, placeholder: "Search all messages", onChange: (e) => setQuery(e.target.value) }), query && /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Clear search", onClick: () => setQuery("") }, /* @__PURE__ */ React.createElement(X, { size: 16 }))), !trimmed && pins.length > 0 && /* @__PURE__ */ React.createElement("button", { "data-role": "pin-bar", style: S.pinBar, onClick: cyclePin, title: pins.length > 1 ? "Pinned messages \u2014 tap for the next" : "Pinned message" }, /* @__PURE__ */ React.createElement(Pin, { size: 15, style: { color: ACCENT, flexShrink: 0 } }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0, textAlign: "left" } }, /* @__PURE__ */ React.createElement("div", { style: S.pinBarLabel }, "Pinned message", pins.length > 1 ? ` ${pinIdx + 1}/${pins.length}` : ""), /* @__PURE__ */ React.createElement("div", { style: S.pinBarText }, pinText(pins[pinIdx] || pins[0])))), trimmed ? /* @__PURE__ */ React.createElement("div", { style: S.messages }, /* @__PURE__ */ React.createElement("div", { style: { ...S.muted, padding: "2px 4px" } }, results === null ? "Searching\u2026" : `${results.length} result${results.length === 1 ? "" : "s"} across the whole history`), results && results.map((r) => /* @__PURE__ */ React.createElement("button", { key: r.key, style: S.result, onClick: () => {
     setResults(null);
     setQuery("");
     setJumpTo(r.id);
-  } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "baseline" } }, /* @__PURE__ */ React.createElement("span", { style: { color: SENDER, fontWeight: 600, fontSize: 13 } }, r.anon ? anonLabel(r.author + group.id) : r.authorName || "member"), /* @__PURE__ */ React.createElement("span", { style: S.time }, fmtTime(r.ts))), /* @__PURE__ */ React.createElement("div", { style: S.resultText }, r.text))), results && results.length === 0 && /* @__PURE__ */ React.createElement("div", { style: S.empty }, /* @__PURE__ */ React.createElement("p", { style: S.muted }, "No messages match \u201C", trimmed, "\u201D."))) : /* @__PURE__ */ React.createElement("div", { ref: feedRef, onScroll: onFeedScroll, "data-role": "feed", "data-unread-anchor": anchor || void 0, style: S.messages }, items.length === 0 && /* @__PURE__ */ React.createElement("div", { style: S.empty }, /* @__PURE__ */ React.createElement("p", { style: S.muted }, "Be the first to say hello \u{1F44B}")), items.map((m) => {
+  } }, /* @__PURE__ */ React.createElement("span", { style: { color: SENDER, fontWeight: 600, fontSize: 13 } }, r.anon ? anonLabel(r.author + group.id) : r.authorName || "member"), /* @__PURE__ */ React.createElement("div", { style: S.resultText }, r.text), /* @__PURE__ */ React.createElement("div", { "data-role": "msg-stamp", style: S.stamp }, fmtStamp(r.ts)))), results && results.length === 0 && /* @__PURE__ */ React.createElement("div", { style: S.empty }, /* @__PURE__ */ React.createElement("p", { style: S.muted }, "No messages match \u201C", trimmed, "\u201D."))) : /* @__PURE__ */ React.createElement("div", { ref: feedRef, onScroll: onFeedScroll, "data-role": "feed", "data-unread-anchor": anchor || void 0, style: S.messages }, items.length === 0 && /* @__PURE__ */ React.createElement("div", { style: S.empty }, /* @__PURE__ */ React.createElement("p", { style: S.muted }, ready ? "Be the first to say hello \u{1F44B}" : "Loading messages\u2026")), visible.length < items.length && /* @__PURE__ */ React.createElement("button", { "data-role": "show-earlier", style: S.showEarlier, onClick: () => setShown(shownCount + WINDOW) }, "Show earlier messages"), visible.map((m) => {
     if (m.system) return /* @__PURE__ */ React.createElement("div", { key: m.id, id: "msg-" + m.id, style: S.systemMsg, className: "reveal" }, m.text);
     const mine = m.author === session.key;
     const isMuted = mutedSet.has(m.author);
@@ -729,34 +831,52 @@ function ThreadModal({ root, items, byKey, me, onClose, onReply }) {
     frontier = next;
   }
   const all = [root, ...chain].sort((a, b) => a.ts - b.ts);
-  return /* @__PURE__ */ React.createElement(Modal, { onClose, title: "Message thread" }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8, maxHeight: "52vh", overflowY: "auto" } }, all.map((m, i) => /* @__PURE__ */ React.createElement("div", { key: m.id, style: { ...S.reply, ...i === 0 ? S.threadRoot : {} } }, /* @__PURE__ */ React.createElement("div", { style: S.bubbleHead }, /* @__PURE__ */ React.createElement("span", { style: { color: SENDER, fontWeight: 600, fontSize: 12 } }, m.anon && /* @__PURE__ */ React.createElement(EyeOff, { size: 10, style: { verticalAlign: -1, marginRight: 3 } }), senderLabel(m)), /* @__PURE__ */ React.createElement("span", { style: S.time }, fmtTime(m.ts)), i === 0 && /* @__PURE__ */ React.createElement("span", { style: { ...S.pill, background: "#2dd4bf22", color: ACCENT, marginLeft: "auto" } }, "ORIGINAL")), m.replyTo && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: MUTED, marginBottom: 2 } }, "\u21A9 ", (() => {
+  return /* @__PURE__ */ React.createElement(Modal, { onClose, title: "Message thread" }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8, maxHeight: "52vh", overflowY: "auto" } }, all.map((m, i) => /* @__PURE__ */ React.createElement("div", { key: m.id, style: { ...S.reply, ...i === 0 ? S.threadRoot : {} } }, /* @__PURE__ */ React.createElement("div", { style: S.bubbleHead }, /* @__PURE__ */ React.createElement("span", { style: { color: SENDER, fontWeight: 600, fontSize: 12 } }, m.anon && /* @__PURE__ */ React.createElement(EyeOff, { size: 10, style: { verticalAlign: -1, marginRight: 3 } }), senderLabel(m)), i === 0 && /* @__PURE__ */ React.createElement("span", { style: { ...S.pill, background: "#2dd4bf22", color: ACCENT, marginLeft: "auto" } }, "ORIGINAL")), m.replyTo && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: MUTED, marginBottom: 2 } }, "\u21A9 ", (() => {
     const par = byKey && byKey.get(m.replyTo.key);
     return par ? senderLabel(par) : "Deleted";
-  })()), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14 } }, m.text)))), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement(Composer, { me, onSend: (t, a) => onReply(t, a), placeholder: "Reply in this thread\u2026" })));
+  })()), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14 } }, m.text), /* @__PURE__ */ React.createElement("div", { "data-role": "msg-stamp", style: S.stamp }, fmtStamp(m.ts))))), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement(Composer, { me, onSend: (t, a) => onReply(t, a), placeholder: "Reply in this thread\u2026" })));
 }
 function Forum({ session, group, me, isAdmin, mutes }) {
   const prefix = postPrefix(group.id);
-  const [items, reload] = useItems(prefix, 3e3);
+  const [items, reload, mutate] = useItems(prefix, 3e3);
   const [composing, setComposing] = useState(false);
+  const [shown, setShown] = useState(40);
+  const addLocal = useCallback((p) => mutate((cur) => cur.some((x) => x._key === p._key) ? null : [...cur, p].sort((a, b) => a.ts - b.ts)), [mutate]);
+  const replaceLocal = useCallback((key, p) => mutate((cur) => {
+    const i = cur.findIndex((x) => x._key === key);
+    if (i < 0) return null;
+    const next = cur.slice();
+    next[i] = p;
+    return next;
+  }), [mutate]);
+  const dropLocal = useCallback((key) => mutate((cur) => {
+    const next = cur.filter((p) => p._key !== key);
+    return next.length === cur.length ? null : next;
+  }), [mutate]);
   const post = async (title, body, anon) => {
-    await postCreate(session, group.id, title, body, anon);
+    const r = await postCreate(session, group.id, title, body, anon);
+    if (r && r.ok && r.post) addLocal({ ...r.post, _key: r.key });
     reload();
   };
   const del = async (p) => {
-    await postDelete(session, group.id, p._key);
+    const r = await postDelete(session, group.id, p._key);
+    if (r && r.ok) dropLocal(p._key);
     reload();
   };
   const addReply = async (p, text, anon) => {
-    await postReply(session, group.id, p._key, text, anon);
+    const r = await postReply(session, group.id, p._key, text, anon);
+    if (r && r.ok && r.post) replaceLocal(p._key, { ...r.post, _key: p._key });
     reload();
   };
   const delReply = async (p, rid) => {
-    await postDeleteReply(session, group.id, p._key, rid);
+    const r = await postDeleteReply(session, group.id, p._key, rid);
+    if (r && r.ok && r.post) replaceLocal(p._key, { ...r.post, _key: p._key });
     reload();
   };
   const mutedSet = new Set(mutes || []);
   const sorted = items.filter((p) => !mutedSet.has(p.author)).sort((a, b) => b.ts - a.ts);
-  return /* @__PURE__ */ React.createElement("div", { style: S.chatArea }, /* @__PURE__ */ React.createElement("div", { style: S.feed }, sorted.length === 0 && /* @__PURE__ */ React.createElement("div", { style: S.empty }, /* @__PURE__ */ React.createElement(MapPin, { size: 28, style: { opacity: 0.5 } }), /* @__PURE__ */ React.createElement("p", { style: S.muted }, "No posts yet. Share something with the forum.")), sorted.map((p) => /* @__PURE__ */ React.createElement(PostCard, { key: p.id, post: p, session, me, isAdmin, onDelete: () => del(p), onReply: (t, a) => addReply(p, t, a), onDeleteReply: (rid) => delReply(p, rid) }))), /* @__PURE__ */ React.createElement("div", { style: S.composer }, /* @__PURE__ */ React.createElement("button", { style: S.primary, onClick: () => setComposing(true) }, /* @__PURE__ */ React.createElement(Plus, { size: 18 }), " New post")), composing && /* @__PURE__ */ React.createElement(PostComposer, { me, onClose: () => setComposing(false), onPost: (t, b, a) => {
+  const visible = sorted.slice(0, shown);
+  return /* @__PURE__ */ React.createElement("div", { style: S.chatArea }, /* @__PURE__ */ React.createElement("div", { style: S.feed }, sorted.length === 0 && /* @__PURE__ */ React.createElement("div", { style: S.empty }, /* @__PURE__ */ React.createElement(MapPin, { size: 28, style: { opacity: 0.5 } }), /* @__PURE__ */ React.createElement("p", { style: S.muted }, "No posts yet. Share something with the forum.")), visible.map((p) => /* @__PURE__ */ React.createElement(PostCard, { key: p.id, post: p, session, me, isAdmin, onDelete: () => del(p), onReply: (t, a) => addReply(p, t, a), onDeleteReply: (rid) => delReply(p, rid) })), visible.length < sorted.length && /* @__PURE__ */ React.createElement("button", { "data-role": "show-earlier", style: S.showEarlier, onClick: () => setShown(shown + 40) }, "Show older posts (", sorted.length - visible.length, ")")), /* @__PURE__ */ React.createElement("div", { style: S.composer }, /* @__PURE__ */ React.createElement("button", { style: S.primary, onClick: () => setComposing(true) }, /* @__PURE__ */ React.createElement(Plus, { size: 18 }), " New post")), composing && /* @__PURE__ */ React.createElement(PostComposer, { me, onClose: () => setComposing(false), onPost: (t, b, a) => {
     post(t, b, a);
     setComposing(false);
   } }));
@@ -765,9 +885,9 @@ function PostCard({ post, session, me, isAdmin, onDelete, onReply, onDeleteReply
   const [open, setOpen] = useState(false);
   const mine = post.author === session.key;
   const replies = post.replies || [];
-  return /* @__PURE__ */ React.createElement("div", { style: S.post, className: "reveal" }, /* @__PURE__ */ React.createElement("div", { style: S.bubbleHead }, /* @__PURE__ */ React.createElement("span", { style: { color: post.anon ? "#2dd4bf" : "#7dd3fc", fontWeight: 600 } }, post.anon && /* @__PURE__ */ React.createElement(EyeOff, { size: 11, style: { verticalAlign: -1, marginRight: 3 } }), senderLabel(post)), /* @__PURE__ */ React.createElement("span", { style: S.time }, fmtTime(post.ts)), (isAdmin || mine) && /* @__PURE__ */ React.createElement("button", { style: S.miniDel, onClick: onDelete }, /* @__PURE__ */ React.createElement(Trash2, { size: 12 }))), post.title && /* @__PURE__ */ React.createElement("div", { style: S.postTitle }, post.title), /* @__PURE__ */ React.createElement("div", { style: { color: "#cdd9e1" } }, post.text), /* @__PURE__ */ React.createElement("button", { style: S.replyToggle, onClick: () => setOpen((o) => !o) }, replies.length, " repl", replies.length === 1 ? "y" : "ies", " ", open ? "\u25B4" : "\u25BE"), open && /* @__PURE__ */ React.createElement("div", { style: S.replyZone }, replies.map((r) => {
+  return /* @__PURE__ */ React.createElement("div", { style: S.post, className: "reveal" }, /* @__PURE__ */ React.createElement("div", { style: S.bubbleHead }, /* @__PURE__ */ React.createElement("span", { style: { color: post.anon ? "#2dd4bf" : "#7dd3fc", fontWeight: 600 } }, post.anon && /* @__PURE__ */ React.createElement(EyeOff, { size: 11, style: { verticalAlign: -1, marginRight: 3 } }), senderLabel(post)), (isAdmin || mine) && /* @__PURE__ */ React.createElement("button", { style: S.miniDel, onClick: onDelete }, /* @__PURE__ */ React.createElement(Trash2, { size: 12 }))), post.title && /* @__PURE__ */ React.createElement("div", { style: S.postTitle }, post.title), /* @__PURE__ */ React.createElement("div", { style: { color: "#cdd9e1" } }, post.text), /* @__PURE__ */ React.createElement("div", { "data-role": "msg-stamp", style: S.stamp }, fmtStamp(post.ts)), /* @__PURE__ */ React.createElement("button", { style: S.replyToggle, onClick: () => setOpen((o) => !o) }, replies.length, " repl", replies.length === 1 ? "y" : "ies", " ", open ? "\u25B4" : "\u25BE"), open && /* @__PURE__ */ React.createElement("div", { style: S.replyZone }, replies.map((r) => {
     const rmine = r.author === session.key;
-    return /* @__PURE__ */ React.createElement("div", { key: r.id, style: S.reply }, /* @__PURE__ */ React.createElement("div", { style: S.bubbleHead }, /* @__PURE__ */ React.createElement("span", { style: { color: r.anon ? "#2dd4bf" : "#7dd3fc", fontWeight: 600, fontSize: 12 } }, r.anon && /* @__PURE__ */ React.createElement(EyeOff, { size: 10, style: { verticalAlign: -1, marginRight: 3 } }), senderLabel(r)), /* @__PURE__ */ React.createElement("span", { style: S.time }, fmtTime(r.ts)), (isAdmin || rmine) && /* @__PURE__ */ React.createElement("button", { style: S.miniDel, onClick: () => onDeleteReply(r.id) }, /* @__PURE__ */ React.createElement(Trash2, { size: 11 }))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14 } }, r.text));
+    return /* @__PURE__ */ React.createElement("div", { key: r.id, style: S.reply }, /* @__PURE__ */ React.createElement("div", { style: S.bubbleHead }, /* @__PURE__ */ React.createElement("span", { style: { color: r.anon ? "#2dd4bf" : "#7dd3fc", fontWeight: 600, fontSize: 12 } }, r.anon && /* @__PURE__ */ React.createElement(EyeOff, { size: 10, style: { verticalAlign: -1, marginRight: 3 } }), senderLabel(r)), (isAdmin || rmine) && /* @__PURE__ */ React.createElement("button", { style: S.miniDel, onClick: () => onDeleteReply(r.id) }, /* @__PURE__ */ React.createElement(Trash2, { size: 11 }))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14 } }, r.text), /* @__PURE__ */ React.createElement("div", { "data-role": "msg-stamp", style: S.stamp }, fmtStamp(r.ts)));
   }), /* @__PURE__ */ React.createElement(Composer, { me, onSend: (t, a) => onReply(t, a), placeholder: "Add a reply\u2026" })));
 }
 function PostComposer({ me, onClose, onPost }) {
@@ -836,10 +956,6 @@ function AdminModal({ session, group, isOwner, onClose, onChange, onDeleted }) {
 function Modal({ title, children, onClose }) {
   return /* @__PURE__ */ React.createElement("div", { style: S.modalWrap, onClick: onClose }, /* @__PURE__ */ React.createElement("div", { style: S.modal, className: "sheet", onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { style: S.modalHead }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 700 } }, title), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, onClick: onClose }, /* @__PURE__ */ React.createElement(X, { size: 18 }))), children));
 }
-function fmtTime(ts) {
-  const d = new Date(ts), n = /* @__PURE__ */ new Date();
-  return d.toDateString() === n.toDateString() ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : d.toLocaleDateString([], { month: "short", day: "numeric" });
-}
 function fmtStamp(ts) {
   const d = new Date(ts);
   const date = d.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
@@ -883,7 +999,6 @@ const S = {
   bubble: { position: "relative", maxWidth: "92%", background: PANEL2, border: `1px solid ${LINE}`, borderRadius: 16, borderBottomLeftRadius: 5, padding: "9px 13px", fontSize: 15, lineHeight: 1.4, boxShadow: "0 1px 2px rgba(0,0,0,.35)" },
   bubbleMine: { background: "#123f38", border: "1px solid #1d5a50", borderBottomLeftRadius: 16, borderBottomRightRadius: 5 },
   bubbleHead: { display: "flex", alignItems: "center", gap: 8, marginBottom: 3, fontSize: 12 },
-  time: { color: MUTED, fontSize: 11 },
   stamp: { fontSize: 10, color: MUTED, textAlign: "right", marginTop: 3, letterSpacing: 0.2 },
   systemMsg: { alignSelf: "center", fontSize: 12, color: MUTED, background: PANEL2, borderRadius: 20, padding: "4px 12px", margin: "2px 0" },
   miniDel: { background: "transparent", border: "none", color: "#6b7a85", cursor: "pointer", padding: 2, display: "flex", marginLeft: "auto" },
@@ -926,6 +1041,7 @@ const S = {
   replyToggle: { background: "transparent", border: "none", color: ACCENT, cursor: "pointer", fontSize: 13, marginTop: 10, padding: 0 },
   replyZone: { marginTop: 10, borderTop: `1px solid ${LINE}`, paddingTop: 10, display: "flex", flexDirection: "column", gap: 8 },
   reply: { background: PANEL2, borderRadius: 10, padding: "7px 10px" },
+  showEarlier: { alignSelf: "center", background: "transparent", border: `1px solid ${LINE}`, color: MUTED, borderRadius: 20, padding: "5px 14px", fontSize: 12, cursor: "pointer", fontFamily: "inherit" },
   bottomBar: { display: "flex", gap: 10, padding: 14, borderTop: `1px solid ${LINE}`, background: PANEL },
   badge: { background: ACCENT, color: "#04201d", fontWeight: 700, fontSize: 12, minWidth: 22, height: 22, padding: "0 7px", borderRadius: 11, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
   scrollDown: { position: "absolute", right: 14, bottom: 78, zIndex: 35, width: 38, height: 38, borderRadius: "50%", background: PANEL, border: `1px solid ${LINE}`, color: ACCENT, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 6px 18px rgba(0,0,0,.45)" },
