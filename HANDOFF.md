@@ -26,7 +26,7 @@ Any instructions elsewhere describing TanStack Start, Vite, Convex, or shadcn
 | `public/sw.js` | Service worker (app-shell cache). |
 | `public/*.min.js`, `lucide.js`, `qrcode.min.js` | Vendored libraries. Do not hand-edit. |
 | `tools/smoke.mjs` | Dependency-free API test (needs a running server). |
-| `tools/render-test.mjs` | Loads the real page in jsdom and drives sign-up, community creation, invites, message search, the message menu, replies, muting, and the Forum tab. |
+| `tools/render-test.mjs` | Loads the real page in jsdom and drives sign-up, community creation, invites, server-backed search, the emoji picker, the message menu, replies, pinning, muting, and the Forum tab. |
 | `data.json` | Runtime database. **Never commit** (gitignored). |
 
 ## Build & run
@@ -60,7 +60,7 @@ with `freebuff-preview start`.
 | Key pattern | Value |
 | --- | --- |
 | `account:<16-char key>` | `{ key, createdAt, sessionId }` — **the login credential itself** |
-| `group:<id>` | `{ id, name, createdAt, ownerKey, admins[], members{key:{username,joinedAt,lastNameChange}}, usernames{lowercased→key}, banned[], invite, inviteOnce }` |
+| `group:<id>` | `{ id, name, createdAt, ownerKey, admins[], members{key:{username,joinedAt,lastNameChange}}, usernames{lowercased→key}, banned[], invite, inviteOnce, pins[] }` |
 | `msg:<gid>:general:<ts>:<uid>` | `{ id, ts, text, anon, author, authorName, gid, replyTo? }` (or `{ system:true, text }`) |
 | `post:<gid>:<ts>:<uid>` | `{ id, ts, title, text, anon, author, authorName, gid, replies[] }` |
 
@@ -73,10 +73,14 @@ soon as one new member joins with it. `POST /api/group/invite` mints or rotates
 `inviteOnce`, so at most one unused one-time code exists per community.
 
 A message that replies to another carries
-`replyTo: { key, id, ts, author, authorName, excerpt }`. The excerpt is captured
-at send time, so the preview survives even if the parent is deleted — the client
-detects that by looking for `replyTo.key` in the loaded messages and shows
-`Deleted` instead.
+`replyTo: { key, id, ts, author, anon }`, all derived server-side from the
+stored parent (a `replyTo` pointing at a key that doesn't exist in the group is
+dropped). No display strings are stored, so the client renders the preview's
+name and excerpt from the live parent — a parent that is gone shows `Deleted`,
+and a renamed author's reply preview follows the new name.
+
+`pins` is an array of `{ key, id, ts, author, anon, pinnedBy, pinnedAt }`,
+newest first and capped at 20. Deleting a message also removes its pin.
 
 ## API reference (`server.js`)
 
@@ -86,35 +90,53 @@ Accounts / sessions:
 - `POST /api/account/login` `{ key }` → `{ ok, sessionId }` (rotates session)
 - `GET  /api/account/session?key&sessionId` → `{ valid }` (polled every 4s)
 
-Groups:
+Groups — **every call must include the caller's `sessionId`**:
 
-- `POST /api/group/create` `{ key, name }` → `{ ok, group }`
-- `POST /api/group/join` `{ key, code }` (code = group id, reusable `invite`, or one-time `inviteOnce`) → `{ ok, group }`
-- `POST /api/group/invite` `{ key, gid }` — any member; mints/rotates `inviteOnce` (single use)
-- `POST /api/group/claimname` `{ key, gid, username }` → first claim wins; renames have a 60-day cooldown
-- `POST /api/group/remove` `{ key, gid, targetKey }` — admin/owner; non-permanent (may rejoin)
-- `POST /api/group/toggleadmin` `{ key, gid, targetKey }` — **owner only**
-- `POST /api/group/ban` `{ ownerKey, gid, targetKey }` — owner only; permanent
-- `POST /api/group/delete` `{ ownerKey, gid }` — owner only; also deletes the group's `msg:`/`post:` keys
+- `POST /api/group/create` `{ key, sessionId, name }` → `{ ok, group }`
+- `POST /api/group/join` `{ key, sessionId, code }` (code = group id, reusable `invite`, or one-time `inviteOnce`) → `{ ok, group }`
+- `POST /api/group/invite` `{ key, sessionId, gid }` — any member; mints/rotates `inviteOnce` (single use)
+- `POST /api/group/claimname` `{ key, sessionId, gid, username }` → first claim wins; renames have a 60-day cooldown and append a server-written system notice
+- `POST /api/group/remove` `{ key, sessionId, gid, targetKey }` — admin/owner; non-permanent (may rejoin)
+- `POST /api/group/toggleadmin` `{ key, sessionId, gid, targetKey }` — **owner only**
+- `POST /api/group/ban` `{ key, sessionId, gid, targetKey }` — owner only; permanent
+- `POST /api/group/delete` `{ key, sessionId, gid }` — owner only; also deletes the group's `msg:`/`post:` keys
+- `POST /api/group/pin` / `POST /api/group/unpin` `{ key, sessionId, gid, msgKey }` — **admin/owner only**
 
-Generic content KV (messages and posts only):
+Content — authenticated; **the server sets `author`/`authorName` from the session**:
+
+- `POST /api/message/send` `{ key, sessionId, gid, text, anon, replyTo? }` → `{ ok, key, message }`
+- `POST /api/message/delete` `{ key, sessionId, gid, msgKey }` — author or admin
+- `POST /api/message/search` `{ key, sessionId, gid, q }` → `{ ok, results[], total }` — scans the whole history server-side
+- `POST /api/post/create` `{ key, sessionId, gid, title, text, anon }` → `{ ok, key, post }`
+- `POST /api/post/delete` `{ key, sessionId, gid, postKey }` — author or admin
+- `POST /api/post/reply` `{ key, sessionId, gid, postKey, text, anon }`
+- `POST /api/post/deleteReply` `{ key, sessionId, gid, postKey, replyId }` — reply author or admin
+
+Reads — open; a group id or invite is the capability:
 
 - `GET  /api/get?key=` → `{ key, value }` or `null`
 - `GET  /api/mget?prefix=` → `{ prefix, items: [[key, value], …] }` (batch read, used by all polling)
-- `POST /api/set` `{ key, value }` — **only keys starting with `msg:` or `post:`**
-- `POST /api/delete` `{ key }` — same restriction
 - `GET  /api/list?prefix=` → `{ keys }`
+- Any other `/api/…` path → JSON `404` (it must never fall through to the static handler)
 
 ### Access rules (important — do not weaken)
 
-- `account:*` keys are **invisible and unwritable** through the generic KV
-  endpoints (`/api/get`, `/api/mget`, `/api/list`, `/api/set`, `/api/delete`).
-  Removing this guard would let anyone enumerate every login key and take over
-  every account.
-- `group:*` documents are **readable** through the KV endpoints (the client
-  reads them directly) but **not writable** — all group mutations go through
-  the validated `/api/group/*` endpoints. This prevents self-promotion to admin
-  and un-banning via a raw `/api/set`.
+- **Every mutation requires `{ key, sessionId }`** and checks it with
+  `sessionOk`. Because the session id rotates on each login, a leaked or
+  guessed key alone cannot write.
+- **The server owns `author`.** `/api/message/send`, `/api/post/create` and
+  `/api/post/reply` ignore any identity in the payload and derive it from the
+  session plus the group's member record.
+- **There is no raw key-write endpoint.** `/api/set` and `/api/delete` were
+  removed and unknown `/api/…` paths are JSON 404s. That closed the old hole
+  where anyone could forge or delete `msg:`/`post:` content directly.
+- `account:*` keys are **invisible** through the read endpoints (`/api/get`,
+  `/api/mget`, `/api/list`). Removing this guard would let anyone enumerate
+  every login key and take over every account.
+- `group:*` documents are **readable** through the read endpoints (the client
+  reads them directly) but **never writable** — all group changes go through
+  `/api/group/*`, which check the session and the caller's role. This is what
+  prevents self-promotion to admin, un-banning, and forge-pinning.
 - Static responses 404 for missing assets (`/foo.js`) instead of falling back to
   `index.html`.
 
@@ -132,8 +154,20 @@ Generic content KV (messages and posts only):
   per-community default toggle was intentionally removed. Anonymous labels are
   derived from `author + gid` (`anonLabel`), so they are stable within a
   community.
-- `GeneralChat` has client-side message search (`query`/`shown`); it filters the
-  already-loaded messages, so no server support is needed.
+- General-chat search is **server-backed** (`messageSearch` → `/api/message/search`,
+  150 ms debounce). While a query is active the message list is replaced by a
+  results list; picking a result clears the query and jumps to the message.
+  Bubbles carry `id={"msg-" + m.id}` so `scrollToId` can scroll to `#msg-<id>`
+  and flash it (`S.bubbleFlash`).
+- The pinned bar (`data-role="pin-bar"`) shows `pins[pinIdx]`; `pins[0]` is the
+  newest, so it is what appears first. Tapping the bar advances the index
+  (wrapping) and scrolls to that pin — one control cycles through them all.
+  Admins toggle a pin from the ⋮ menu; the result arrives via `onGroupChange`
+  (`reloadGroup`), so the bar updates immediately instead of waiting for the poll.
+- The composer has an emoji palette (`EMOJI`, `data-role="emoji-panel"`). Emoji
+  are ordinary text and travel the same authenticated send path.
+- `auth(session, extra)` builds every authenticated payload — keep it the only
+  way the client issues mutations.
 - Every General bubble has a ⋮ menu (`MsgMenu`): **Reply**, **View message
   thread** (only when the message is part of a chain), **Mute/Unmute user**
   (hidden on your own messages), and **Delete message** (your own; admins keep
@@ -157,18 +191,18 @@ Generic content KV (messages and posts only):
 - The Invite modal has two tabs: **Indefinite link** (`group.invite`) and
   **One-time link** (`group.inviteOnce`, with a button to generate/rotate it).
 - After changing any file in `public/`, **bump `CACHE` in `public/sw.js`**
-  (currently `commons-v5`; go to `commons-v6`, …) so installed clients drop the
+  (currently `commons-v6`; go to `commons-v7`, …) so installed clients drop the
   old shell. The worker is network-first now, so the bump mainly guarantees
   eviction.
 
 ## Known issues / where to go next
 
-1. **Message/post writes are unauthenticated.** The KV endpoints accept any
-   `msg:`/`post:` key from anyone, so a determined user could forge or delete
-   content (the UI only shows delete buttons to authors/admins, but the API
-   doesn't enforce it). The correct fix is a `/api/message` endpoint that
-   validates `{ key, sessionId }` server-side and sets `author` itself, then
-   removing client writes. This is the top follow-up.
+1. **Reads are not access-controlled.** `/api/get`, `/api/mget` and `/api/list`
+   hand out any `group:` document — and every `msg:`/`post:` value under a
+   prefix — to anyone who knows or guesses a group id. Invites are meant to be
+   the capability, but group ids are only 10 hex chars. Next step: require a
+   session + group membership on reads, and/or lengthen group ids. (Writes are
+   already authenticated — see the access rules above.)
 2. **`data.json` scalability.** Fine for dozens of users; move to SQLite beyond
    that. `/api/mget` scans every key in the store, and the whole store is held
    in memory.
@@ -190,5 +224,10 @@ Generic content KV (messages and posts only):
 - "Did you forget to run convex dev?" or any Vite/TanStack error: wrong repo
   instructions — this project has none of that.
 - Stale UI after a change: service worker cache — bump `CACHE` and hard-reload.
+- A mutation returning `{ ok: false, error: "auth" }`: the request carried a
+  stale `sessionId`. Sessions rotate on every login, so build bodies with
+  `auth(session, …)` and don't cache the session id anywhere else.
+- Both test suites mint their own accounts (and therefore their own sessions),
+  so they never touch `data.json` data that belongs to a real user.
 - Lost data: check for `data.json.corrupt-<ts>` next to `data.json`; a file that
   fails to parse is moved aside rather than overwritten.

@@ -94,7 +94,7 @@ check("the invite icon has hover text", titled("Invite people"));
 check("the admin icon has hover text", titled("Manage members"));
 check("the header anonymous toggle is gone", !titled("Posting anonymously by default") && !titled("Posting with your username"));
 check("the per-message anonymous toggle remains", titled("Sending as tester"));
-check("a message search box is present", !!inputByPlaceholder("Search messages"));
+check("a search box is present", !!inputByPlaceholder("Search all messages"));
 
 // --- invite codes: indefinite vs one-time ---
 document.querySelector('[title="Invite people"]').click();
@@ -124,16 +124,34 @@ composer.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", b
 await sleep(1600);
 check("both messages were sent", /hello world/.test(screen()) && /banana bread/.test(screen()));
 
-setInput(inputByPlaceholder("Search messages"), "banana");
-await sleep(300);
-check("search keeps the matching message", /banana bread/.test(screen()));
-check("search hides non-matching messages", !/hello world/.test(screen()));
-setInput(inputByPlaceholder("Search messages"), "zzz-no-match");
-await sleep(300);
+setInput(inputByPlaceholder("Search all messages"), "banana");
+await sleep(600);
+check("search lists the matching message", /banana bread/.test(screen()));
+check("search shows only matches", !/hello world/.test(screen()));
+check("search reports how many results it found", /1 result across the whole history/.test(screen()));
+setInput(inputByPlaceholder("Search all messages"), "zzz-no-match");
+await sleep(600);
 check("an empty result explains itself", /No messages match/.test(screen()));
 
+// --- emoji picker ---
+setInput(inputByPlaceholder("Search all messages"), "");
+await sleep(300);
+document.querySelector('[title="Emoji"]').click();
+await sleep(250);
+check("the emoji picker opens", !!document.querySelector('[data-role="emoji-panel"]'));
+const fireBtn = [...document.querySelectorAll("button")].find((b) => b.textContent === "🔥");
+check("the palette renders emoji", !!fireBtn);
+fireBtn.click();
+await sleep(150);
+const composerEmoji = inputByPlaceholder("Message the whole community…");
+check("clicking an emoji appends it to the composer", (composerEmoji.value || "").includes("🔥"), composerEmoji.value);
+setInput(composerEmoji, "emoji test 🔥");
+composerEmoji.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+await sleep(1500);
+check("an emoji message was sent", /emoji test 🔥/.test(screen()));
+
 // --- per-message menu ---
-setInput(inputByPlaceholder("Search messages"), "");
+setInput(inputByPlaceholder("Search all messages"), "");
 await sleep(200);
 const optionsBtnFor = (text) => {
   for (const b of document.querySelectorAll('[title="Message options"]')) {
@@ -199,14 +217,16 @@ check("the deleted message is gone", !/hello world/.test(screen()));
 const groupsRes = await (await fetch(BASE + "/api/mget?prefix=" + encodeURIComponent("group:"))).json();
 const testGroup = groupsRes.items.map(([, v]) => v).find((g) => g.invite === inviteCode);
 check("located the new community by its invite code", !!testGroup);
-const putJSON = (k, value) => fetch(BASE + "/api/set", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: k, value }) });
-const bob = await (await fetch(BASE + "/api/account/create", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).json();
-const bobJoin = await (await fetch(BASE + "/api/group/join", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: bob.key, code: testGroup.invite }) })).json();
+// Content writes are authenticated now, so Bob writes through the API with his
+// own session rather than a raw key write.
+const apiPost = (path, body) => fetch(BASE + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
+const bob = await apiPost("/api/account/create", {});
+const bobJoin = await apiPost("/api/group/join", { key: bob.key, sessionId: bob.sessionId, code: testGroup.invite });
 check("a second member joined the community", bobJoin.ok === true);
-const bts = Date.now();
-await putJSON(`msg:${testGroup.id}:general:${bts}:bob`, { id: "bob-msg", ts: bts, text: "from bob", anon: false, author: bob.key, authorName: "bob", gid: testGroup.id });
-await putJSON(`msg:${testGroup.id}:general:${bts + 1}:bobsolo`, { id: "bob-solo", ts: bts + 1, text: "bob solo", anon: false, author: bob.key, authorName: "bob", gid: testGroup.id });
-await putJSON(`post:${testGroup.id}:${bts}:bob`, { id: "bob-post", ts: bts, text: "bob forum post", anon: false, author: bob.key, authorName: "bob", gid: testGroup.id, replies: [] });
+await apiPost("/api/group/claimname", { key: bob.key, sessionId: bob.sessionId, gid: testGroup.id, username: "bob" });
+await apiPost("/api/message/send", { key: bob.key, sessionId: bob.sessionId, gid: testGroup.id, text: "from bob" });
+await apiPost("/api/message/send", { key: bob.key, sessionId: bob.sessionId, gid: testGroup.id, text: "bob solo" });
+await apiPost("/api/post/create", { key: bob.key, sessionId: bob.sessionId, gid: testGroup.id, text: "bob forum post" });
 await sleep(3500);
 check("the other member's message reached General", /from bob/.test(screen()));
 
@@ -259,6 +279,26 @@ check("the reply preview reads Muted", !!mutedPreview && /Muted/.test(mutedPrevi
 mutedPreview.click();
 await sleep(300);
 check("tapping the preview reveals the muted message", /from bob/.test(screen()) && previewFor("reply to bob").getAttribute("data-muted") === "0");
+
+// --- pinning (admins only, newest first, tap the bar to cycle) ---
+optionsBtnFor("banana bread").click();
+await sleep(150);
+check("the admin's menu offers Pin message", /Pin message/.test(screen()));
+check("clicked Pin message", click("Pin message"));
+await sleep(800);
+check("the pinned bar appears with the pin's preview", !!document.querySelector('[data-role="pin-bar"]') && /banana bread/.test(document.querySelector('[data-role="pin-bar"]').textContent));
+optionsBtnFor("replying to hello").click();
+await sleep(150);
+check("clicked Pin message on a second message", click("Pin message"));
+await sleep(1000);
+const pinBar = () => document.querySelector('[data-role="pin-bar"]');
+check("the bar reports it holds two pins", /1\/2/.test(pinBar().textContent), pinBar().textContent);
+// The most recently pinned message is the one shown first.
+check("it opens on the most recent pin", /replying to hello/.test(pinBar().textContent) && !/banana bread/.test(pinBar().textContent), pinBar().textContent);
+const firstPinText = pinBar().textContent;
+pinBar().click();
+await sleep(400);
+check("tapping the bar cycles to the next pin", /2\/2/.test(pinBar().textContent) && /banana bread/.test(pinBar().textContent) && pinBar().textContent !== firstPinText, pinBar().textContent);
 
 // --- the Forum tab ---
 check("switched to the Forum tab", click("Forum"));

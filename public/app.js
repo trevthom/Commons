@@ -25,7 +25,10 @@ const {
   MoreVertical,
   CornerUpLeft,
   Bell,
-  BellOff
+  BellOff,
+  Smile,
+  Pin,
+  PinOff
 } = lucide;
 const api = {
   async post(path, body) {
@@ -49,12 +52,19 @@ const sget = async (k) => {
   const j = await api.get("/api/get?key=" + encodeURIComponent(k));
   return j ? j.value : null;
 };
-const sset = async (k, v) => !!await api.post("/api/set", { key: k, value: v });
-const sdelete = async (k) => !!await api.post("/api/delete", { key: k });
 const slist = async (prefix) => {
   const j = await api.get("/api/list?prefix=" + encodeURIComponent(prefix));
   return j ? j.keys : [];
 };
+const auth = (s, extra) => ({ key: s.key, sessionId: s.sessionId, ...extra });
+const messageSend = (s, gid, text, anon, replyTo) => api.post("/api/message/send", auth(s, { gid, text, anon, replyTo }));
+const messageDelete = (s, gid, msgKey) => api.post("/api/message/delete", auth(s, { gid, msgKey }));
+const messageSearch = (s, gid, q) => api.post("/api/message/search", auth(s, { gid, q }));
+const postCreate = (s, gid, title, text, anon) => api.post("/api/post/create", auth(s, { gid, title, text, anon }));
+const postDelete = (s, gid, postKey) => api.post("/api/post/delete", auth(s, { gid, postKey }));
+const postReply = (s, gid, postKey, text, anon) => api.post("/api/post/reply", auth(s, { gid, postKey, text, anon }));
+const postDeleteReply = (s, gid, postKey, replyId) => api.post("/api/post/deleteReply", auth(s, { gid, postKey, replyId }));
+const setPin = (s, gid, msgKey, on) => api.post(on ? "/api/group/pin" : "/api/group/unpin", auth(s, { gid, msgKey }));
 const slistValues = async (prefix) => {
   const j = await api.get("/api/mget?prefix=" + encodeURIComponent(prefix));
   if (!j || !j.items) return [];
@@ -267,7 +277,7 @@ function Home({ session, pendingInvite, clearInvite, onOpen, onLogout }) {
   }, [pendingInvite]);
   const createGroup = async () => {
     const name = newName.trim();
-    const r = await api.post("/api/group/create", { key: session.key, name });
+    const r = await api.post("/api/group/create", { key: session.key, sessionId: session.sessionId, name });
     if (!r || !r.ok) return;
     setCreating(false);
     setNewName("");
@@ -295,7 +305,7 @@ function JoinModal({ session, prefill, onClose, onJoined }) {
     setBusy(true);
     setErr("");
     const raw = code.trim();
-    const r = await api.post("/api/group/join", { key: session.key, code: raw });
+    const r = await api.post("/api/group/join", { key: session.key, sessionId: session.sessionId, code: raw });
     setBusy(false);
     if (r && r.ok) return onJoined(r.group);
     if (r && r.error === "banned") return setErr("You've been removed from this community and can't rejoin.");
@@ -331,7 +341,7 @@ function GroupApp({ session, group, setGroup, tab, setTab, onLeave, onLogout }) 
     return () => clearInterval(t);
   }, [reloadGroup]);
   if (needsName) return /* @__PURE__ */ React.createElement(UsernamePicker, { session, group, onSet: (g) => setGroup(g), onLeave });
-  return /* @__PURE__ */ React.createElement("div", { style: S.screen }, /* @__PURE__ */ React.createElement("div", { style: S.appHeader }, /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, onClick: onLeave }, /* @__PURE__ */ React.createElement(ChevronLeft, { size: 20 })), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700 } }, group.name), /* @__PURE__ */ React.createElement("button", { style: S.nameBtn, onClick: () => setChangingName(true) }, me.username, isOwner ? " \xB7 owner" : isAdmin ? " \xB7 admin" : "", " \u270E")), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Invite people", onClick: () => setShowInvite(true) }, /* @__PURE__ */ React.createElement(QrCode, { size: 18 })), isAdmin && /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Manage members", onClick: () => setShowAdmin(true) }, /* @__PURE__ */ React.createElement(Shield, { size: 18 })), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Log out", onClick: onLogout }, /* @__PURE__ */ React.createElement(LogOut, { size: 18 }))), /* @__PURE__ */ React.createElement("div", { style: S.tabs }, /* @__PURE__ */ React.createElement("button", { style: { ...S.tab, ...tab === "general" ? S.tabActive : {} }, onClick: () => setTab("general") }, /* @__PURE__ */ React.createElement(MessageSquare, { size: 16 }), " General"), /* @__PURE__ */ React.createElement("button", { style: { ...S.tab, ...tab === "forum" ? S.tabActive : {} }, onClick: () => setTab("forum") }, /* @__PURE__ */ React.createElement(MapPin, { size: 16 }), " Forum")), tab === "general" ? /* @__PURE__ */ React.createElement(GeneralChat, { session, group, me, isAdmin, mutes, onToggleMute: toggleMute }) : /* @__PURE__ */ React.createElement(Forum, { session, group, me, isAdmin, mutes }), showInvite && /* @__PURE__ */ React.createElement(InviteModal, { group, session, onClose: () => setShowInvite(false), onChange: reloadGroup }), showAdmin && isAdmin && /* @__PURE__ */ React.createElement(AdminModal, { session, group, isOwner, onClose: () => setShowAdmin(false), onChange: reloadGroup, onDeleted: onLeave }), changingName && /* @__PURE__ */ React.createElement(ChangeNameModal, { session, group, me, onClose: () => setChangingName(false), onChanged: (g) => {
+  return /* @__PURE__ */ React.createElement("div", { style: S.screen }, /* @__PURE__ */ React.createElement("div", { style: S.appHeader }, /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, onClick: onLeave }, /* @__PURE__ */ React.createElement(ChevronLeft, { size: 20 })), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700 } }, group.name), /* @__PURE__ */ React.createElement("button", { style: S.nameBtn, onClick: () => setChangingName(true) }, me.username, isOwner ? " \xB7 owner" : isAdmin ? " \xB7 admin" : "", " \u270E")), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Invite people", onClick: () => setShowInvite(true) }, /* @__PURE__ */ React.createElement(QrCode, { size: 18 })), isAdmin && /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Manage members", onClick: () => setShowAdmin(true) }, /* @__PURE__ */ React.createElement(Shield, { size: 18 })), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Log out", onClick: onLogout }, /* @__PURE__ */ React.createElement(LogOut, { size: 18 }))), /* @__PURE__ */ React.createElement("div", { style: S.tabs }, /* @__PURE__ */ React.createElement("button", { style: { ...S.tab, ...tab === "general" ? S.tabActive : {} }, onClick: () => setTab("general") }, /* @__PURE__ */ React.createElement(MessageSquare, { size: 16 }), " General"), /* @__PURE__ */ React.createElement("button", { style: { ...S.tab, ...tab === "forum" ? S.tabActive : {} }, onClick: () => setTab("forum") }, /* @__PURE__ */ React.createElement(MapPin, { size: 16 }), " Forum")), tab === "general" ? /* @__PURE__ */ React.createElement(GeneralChat, { session, group, me, isAdmin, mutes, onToggleMute: toggleMute, onGroupChange: reloadGroup }) : /* @__PURE__ */ React.createElement(Forum, { session, group, me, isAdmin, mutes }), showInvite && /* @__PURE__ */ React.createElement(InviteModal, { group, session, onClose: () => setShowInvite(false), onChange: reloadGroup }), showAdmin && isAdmin && /* @__PURE__ */ React.createElement(AdminModal, { session, group, isOwner, onClose: () => setShowAdmin(false), onChange: reloadGroup, onDeleted: onLeave }), changingName && /* @__PURE__ */ React.createElement(ChangeNameModal, { session, group, me, onClose: () => setChangingName(false), onChanged: (g) => {
     setGroup(g);
   } }));
 }
@@ -342,7 +352,7 @@ function UsernamePicker({ session, group, onSet, onLeave }) {
   const submit = async () => {
     setBusy(true);
     setErr("");
-    const r = await api.post("/api/group/claimname", { key: session.key, gid: group.id, username: name.trim() });
+    const r = await api.post("/api/group/claimname", { key: session.key, sessionId: session.sessionId, gid: group.id, username: name.trim() });
     setBusy(false);
     if (r && r.ok) return onSet(r.group);
     if (r && r.error === "taken") return setErr("That username is unavailable in this community.");
@@ -358,13 +368,9 @@ function ChangeNameModal({ session, group, me, onClose, onChanged }) {
   const submit = async () => {
     setBusy(true);
     setErr("");
-    const r = await api.post("/api/group/claimname", { key: session.key, gid: group.id, username: name.trim() });
+    const r = await api.post("/api/group/claimname", { key: session.key, sessionId: session.sessionId, gid: group.id, username: name.trim() });
     setBusy(false);
     if (r && r.ok) {
-      if (r.changedFrom) {
-        const id = uid(), ts = now();
-        await sset(`${msgPrefix(group.id)}${ts}:${id}`, { id, ts, system: true, text: `${r.changedFrom} changed their name to ${name.trim()}` });
-      }
       onChanged(r.group);
       onClose();
       return;
@@ -410,28 +416,49 @@ function useMutes(gid, meKey) {
   const toggle = useCallback((authorKey) => setMutes((prev) => prev.includes(authorKey) ? prev.filter((k) => k !== authorKey) : [...prev, authorKey]), []);
   return [mutes, toggle];
 }
+const EMOJI = ["\u{1F600}", "\u{1F604}", "\u{1F602}", "\u{1F979}", "\u{1F60A}", "\u{1F60D}", "\u{1F60E}", "\u{1F914}", "\u{1F605}", "\u{1F609}", "\u{1F643}", "\u{1F634}", "\u{1F622}", "\u{1F62D}", "\u{1F621}", "\u{1F92F}", "\u{1F44D}", "\u{1F44E}", "\u{1F44F}", "\u{1F64C}", "\u{1F64F}", "\u{1F4AA}", "\u{1F91D}", "\u{1F44B}", "\u270C\uFE0F", "\u{1F91E}", "\u2764\uFE0F", "\u{1F9E1}", "\u{1F49A}", "\u{1F499}", "\u{1F525}", "\u2728", "\u{1F389}", "\u{1F382}", "\u2615", "\u{1F355}", "\u26BD", "\u{1F3AE}", "\u{1F3B5}", "\u{1F4F7}", "\u2705", "\u274C", "\u26A0\uFE0F", "\u{1F3AF}", "\u{1F4A1}", "\u{1F680}", "\u{1F327}\uFE0F", "\u{1F31E}"];
 function Composer({ me, onSend, placeholder }) {
   const [text, setText] = useState("");
   const [anonOverride, setAnonOverride] = useState(null);
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  const inputRef = useRef(null);
   const anon = !!anonOverride;
   const send = () => {
     if (!text.trim()) return;
     onSend(text.trim(), anon);
     setText("");
+    setEmojiOpen(false);
   };
-  return /* @__PURE__ */ React.createElement("div", { style: S.composer }, /* @__PURE__ */ React.createElement("button", { style: { ...S.iconBtn, color: anon ? "#2dd4bf" : "#9fb0bd" }, title: anon ? "Sending anonymously" : "Sending as " + me.username, onClick: () => setAnonOverride(!anon) }, anon ? /* @__PURE__ */ React.createElement(EyeOff, { size: 20 }) : /* @__PURE__ */ React.createElement(Eye, { size: 20 })), /* @__PURE__ */ React.createElement("input", { style: S.composerInput, value: text, placeholder, onChange: (e) => setText(e.target.value), onKeyDown: (e) => {
+  const addEmoji = (e) => {
+    setText((t) => t + e);
+    if (inputRef.current) inputRef.current.focus();
+  };
+  useEffect(() => {
+    if (!emojiOpen) return;
+    const close = () => setEmojiOpen(false);
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  }, [emojiOpen]);
+  return /* @__PURE__ */ React.createElement("div", { style: S.composer }, emojiOpen && /* @__PURE__ */ React.createElement("div", { "data-role": "emoji-panel", style: S.emojiPanel, onClick: (e) => e.stopPropagation() }, EMOJI.map((e) => /* @__PURE__ */ React.createElement("button", { key: e, style: S.emojiBtn, onClick: () => addEmoji(e) }, e))), /* @__PURE__ */ React.createElement("button", { style: { ...S.iconBtn, color: anon ? "#2dd4bf" : "#9fb0bd" }, title: anon ? "Sending anonymously" : "Sending as " + me.username, onClick: () => setAnonOverride(!anon) }, anon ? /* @__PURE__ */ React.createElement(EyeOff, { size: 20 }) : /* @__PURE__ */ React.createElement(Eye, { size: 20 })), /* @__PURE__ */ React.createElement("button", { style: { ...S.iconBtn, color: emojiOpen ? ACCENT : "#9fb0bd" }, title: "Emoji", onClick: (e) => {
+    e.stopPropagation();
+    setEmojiOpen((v) => !v);
+  } }, /* @__PURE__ */ React.createElement(Smile, { size: 20 })), /* @__PURE__ */ React.createElement("input", { ref: inputRef, style: S.composerInput, value: text, placeholder, onChange: (e) => setText(e.target.value), onKeyDown: (e) => {
     if (e.key === "Enter") send();
   } }), /* @__PURE__ */ React.createElement("button", { style: S.sendBtn, onClick: send }, /* @__PURE__ */ React.createElement(Send, { size: 18 })));
 }
 const senderLabel = (m) => m.system ? null : m.anon ? anonLabel((m.author || "x") + (m.gid || "")) : m.authorName;
-function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute }) {
+function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroupChange }) {
   const prefix = msgPrefix(group.id);
   const [items, reload] = useItems(prefix);
   const [query, setQuery] = useState("");
+  const [results, setResults] = useState(null);
   const [replyTo, setReplyTo] = useState(null);
   const [menuFor, setMenuFor] = useState(null);
   const [threadRoot, setThreadRoot] = useState(null);
   const [revealed, setRevealed] = useState(() => /* @__PURE__ */ new Set());
+  const [pinIdx, setPinIdx] = useState(0);
+  const [highlight, setHighlight] = useState(null);
+  const [jumpTo, setJumpTo] = useState(null);
   const endRef = useRef(null);
   useEffect(() => {
     endRef.current && endRef.current.scrollIntoView({ behavior: "smooth" });
@@ -441,6 +468,48 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute }) {
     document.addEventListener("click", close);
     return () => document.removeEventListener("click", close);
   }, []);
+  const pins = group.pins || [];
+  useEffect(() => {
+    setPinIdx(0);
+  }, [pins.length]);
+  const trimmed = query.trim();
+  useEffect(() => {
+    if (!trimmed) {
+      setResults(null);
+      return;
+    }
+    let dead = false;
+    const t = setTimeout(async () => {
+      const r = await messageSearch(session, group.id, trimmed);
+      if (!dead) setResults(r && r.ok ? r.results : []);
+    }, 150);
+    return () => {
+      dead = true;
+      clearTimeout(t);
+    };
+  }, [trimmed, session.key, session.sessionId, group.id]);
+  const flash = (id) => {
+    setHighlight(id);
+    setTimeout(() => setHighlight(null), 1800);
+  };
+  const scrollToId = (id) => {
+    const el = document.getElementById("msg-" + id);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      flash(id);
+    }
+  };
+  useEffect(() => {
+    if (!jumpTo) return;
+    scrollToId(jumpTo);
+    setJumpTo(null);
+  }, [jumpTo, items.length]);
+  const cyclePin = () => {
+    if (!pins.length) return;
+    const next = pins.length > 1 ? (pinIdx + 1) % pins.length : pinIdx;
+    setPinIdx(next);
+    scrollToId(pins[next].id);
+  };
   const mutedSet = new Set(mutes || []);
   const byKey = new Map(items.map((m) => [m._key, m]));
   const references = new Set(items.filter((m) => m.replyTo && m.replyTo.key).map((m) => m.replyTo.key));
@@ -478,10 +547,7 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute }) {
     return out;
   };
   const postMessage = async (text, anon, parent) => {
-    const id = uid(), ts = now();
-    const msg = { id, ts, text, anon, author: session.key, authorName: me.username, gid: group.id };
-    if (parent) msg.replyTo = { key: parent._key, id: parent.id, ts: parent.ts, author: parent.author, authorName: senderLabel(parent), excerpt: excerptOf(parent.text) };
-    await sset(`${prefix}${ts}:${id}`, msg);
+    await messageSend(session, group.id, text, anon, parent ? { key: parent._key } : null);
     reload();
   };
   const send = (text, anon) => {
@@ -490,24 +556,35 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute }) {
     postMessage(text, anon, parent);
   };
   const del = async (m) => {
-    await sdelete(m._key);
+    await messageDelete(session, group.id, m._key);
     reload();
   };
+  const togglePin = async (m) => {
+    await setPin(session, group.id, m._key, !pins.some((p) => p.key === m._key));
+    if (onGroupChange) onGroupChange();
+  };
   const openThread = (m) => setThreadRoot(rootOf(m));
-  const q = query.trim().toLowerCase();
-  const shown = q ? items.filter((m) => !m.system && (m.text || "").toLowerCase().includes(q)) : items;
-  return /* @__PURE__ */ React.createElement("div", { style: S.chatArea }, /* @__PURE__ */ React.createElement("div", { style: S.searchBar }, /* @__PURE__ */ React.createElement(Search, { size: 16, style: { color: "#7b8a96", flexShrink: 0 } }), /* @__PURE__ */ React.createElement("input", { style: S.searchInput, value: query, placeholder: "Search messages", onChange: (e) => setQuery(e.target.value) }), query && /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Clear search", onClick: () => setQuery("") }, /* @__PURE__ */ React.createElement(X, { size: 16 }))), /* @__PURE__ */ React.createElement("div", { style: S.messages }, shown.length === 0 && /* @__PURE__ */ React.createElement("div", { style: S.empty }, /* @__PURE__ */ React.createElement("p", { style: S.muted }, q ? `No messages match \u201C${query.trim()}\u201D.` : "Be the first to say hello \u{1F44B}")), shown.map((m) => {
-    if (m.system) return /* @__PURE__ */ React.createElement("div", { key: m.id, style: S.systemMsg, className: "reveal" }, m.text);
+  const pinText = (pin) => {
+    const m = byKey.get(pin.key);
+    return m ? `${senderLabel(m)}: ${excerptOf(m.text)}` : "Deleted message";
+  };
+  return /* @__PURE__ */ React.createElement("div", { style: S.chatArea }, /* @__PURE__ */ React.createElement("div", { style: S.searchBar }, /* @__PURE__ */ React.createElement(Search, { size: 16, style: { color: "#7b8a96", flexShrink: 0 } }), /* @__PURE__ */ React.createElement("input", { style: S.searchInput, value: query, placeholder: "Search all messages", onChange: (e) => setQuery(e.target.value) }), query && /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Clear search", onClick: () => setQuery("") }, /* @__PURE__ */ React.createElement(X, { size: 16 }))), !trimmed && pins.length > 0 && /* @__PURE__ */ React.createElement("button", { "data-role": "pin-bar", style: S.pinBar, onClick: cyclePin, title: pins.length > 1 ? "Pinned messages \u2014 tap for the next" : "Pinned message" }, /* @__PURE__ */ React.createElement(Pin, { size: 15, style: { color: ACCENT, flexShrink: 0 } }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0, textAlign: "left" } }, /* @__PURE__ */ React.createElement("div", { style: S.pinBarLabel }, "Pinned message", pins.length > 1 ? ` ${pinIdx + 1}/${pins.length}` : ""), /* @__PURE__ */ React.createElement("div", { style: S.pinBarText }, pinText(pins[pinIdx] || pins[0])))), trimmed ? /* @__PURE__ */ React.createElement("div", { style: S.messages }, /* @__PURE__ */ React.createElement("div", { style: { ...S.muted, padding: "2px 4px" } }, results === null ? "Searching\u2026" : `${results.length} result${results.length === 1 ? "" : "s"} across the whole history`), results && results.map((r) => /* @__PURE__ */ React.createElement("button", { key: r.key, style: S.result, onClick: () => {
+    setResults(null);
+    setQuery("");
+    setJumpTo(r.id);
+  } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "baseline" } }, /* @__PURE__ */ React.createElement("span", { style: { color: SENDER, fontWeight: 600, fontSize: 13 } }, r.anon ? anonLabel(r.author + group.id) : r.authorName || "member"), /* @__PURE__ */ React.createElement("span", { style: S.time }, fmtTime(r.ts))), /* @__PURE__ */ React.createElement("div", { style: S.resultText }, r.text))), results && results.length === 0 && /* @__PURE__ */ React.createElement("div", { style: S.empty }, /* @__PURE__ */ React.createElement("p", { style: S.muted }, "No messages match \u201C", trimmed, "\u201D."))) : /* @__PURE__ */ React.createElement("div", { style: S.messages }, items.length === 0 && /* @__PURE__ */ React.createElement("div", { style: S.empty }, /* @__PURE__ */ React.createElement("p", { style: S.muted }, "Be the first to say hello \u{1F44B}")), items.map((m) => {
+    if (m.system) return /* @__PURE__ */ React.createElement("div", { key: m.id, id: "msg-" + m.id, style: S.systemMsg, className: "reveal" }, m.text);
     const mine = m.author === session.key;
     const isMuted = mutedSet.has(m.author);
     const inChain = references.has(m._key) || !!m.replyTo;
+    const pinned = pins.some((p) => p.key === m._key);
     if (isMuted && !inChain) return null;
     if (isMuted && !revealed.has(m._key)) {
-      return /* @__PURE__ */ React.createElement("div", { key: m.id, style: { ...S.bubbleRow, justifyContent: mine ? "flex-end" : "flex-start" }, className: "reveal" }, /* @__PURE__ */ React.createElement("div", { style: { ...S.bubble, ...mine ? S.bubbleMine : {}, ...S.mutedBubble } }, /* @__PURE__ */ React.createElement("div", { style: S.bubbleHead }, /* @__PURE__ */ React.createElement("span", { style: { color: MUTED, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 } }, /* @__PURE__ */ React.createElement(BellOff, { size: 11 }), " Muted message"), /* @__PURE__ */ React.createElement("span", { style: S.time }, fmtTime(m.ts)), /* @__PURE__ */ React.createElement("button", { style: S.showBtn, title: "Show this message", onClick: () => reveal(m._key) }, "Show")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: MUTED, fontStyle: "italic" } }, "Hidden because you muted this user.")));
+      return /* @__PURE__ */ React.createElement("div", { key: m.id, id: "msg-" + m.id, style: { ...S.bubbleRow, justifyContent: mine ? "flex-end" : "flex-start" }, className: "reveal" }, /* @__PURE__ */ React.createElement("div", { style: { ...S.bubble, ...mine ? S.bubbleMine : {}, ...S.mutedBubble, ...highlight === m.id ? S.bubbleFlash : {} } }, /* @__PURE__ */ React.createElement("div", { style: S.bubbleHead }, /* @__PURE__ */ React.createElement("span", { style: { color: MUTED, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 } }, /* @__PURE__ */ React.createElement(BellOff, { size: 11 }), " Muted message"), /* @__PURE__ */ React.createElement("span", { style: S.time }, fmtTime(m.ts)), /* @__PURE__ */ React.createElement("button", { style: S.showBtn, title: "Show this message", onClick: () => reveal(m._key) }, "Show")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: MUTED, fontStyle: "italic" } }, "Hidden because you muted this user.")));
     }
     const root = rootOf(m);
     const hasThread = !!root && descendants(root._key).length > 0;
-    return /* @__PURE__ */ React.createElement("div", { key: m.id, style: { ...S.bubbleRow, justifyContent: mine ? "flex-end" : "flex-start" }, className: "reveal" }, /* @__PURE__ */ React.createElement("div", { style: { ...S.bubble, ...mine ? S.bubbleMine : {} } }, /* @__PURE__ */ React.createElement("div", { style: S.bubbleHead }, /* @__PURE__ */ React.createElement("span", { style: { color: SENDER, fontWeight: 600 } }, m.anon && /* @__PURE__ */ React.createElement(EyeOff, { size: 11, style: { verticalAlign: -1, marginRight: 3 } }), senderLabel(m)), /* @__PURE__ */ React.createElement("span", { style: S.time }, fmtTime(m.ts)), /* @__PURE__ */ React.createElement("button", { style: S.miniDel, title: "Message options", onClick: (e) => {
+    return /* @__PURE__ */ React.createElement("div", { key: m.id, id: "msg-" + m.id, style: { ...S.bubbleRow, justifyContent: mine ? "flex-end" : "flex-start" }, className: "reveal" }, /* @__PURE__ */ React.createElement("div", { style: { ...S.bubble, ...mine ? S.bubbleMine : {}, ...highlight === m.id ? S.bubbleFlash : {} } }, /* @__PURE__ */ React.createElement("div", { style: S.bubbleHead }, /* @__PURE__ */ React.createElement("span", { style: { color: SENDER, fontWeight: 600 } }, m.anon && /* @__PURE__ */ React.createElement(EyeOff, { size: 11, style: { verticalAlign: -1, marginRight: 3 } }), senderLabel(m)), pinned && /* @__PURE__ */ React.createElement(Pin, { size: 11, style: { color: ACCENT, flexShrink: 0 } }), /* @__PURE__ */ React.createElement("span", { style: S.time }, fmtTime(m.ts)), /* @__PURE__ */ React.createElement("button", { style: S.miniDel, title: "Message options", onClick: (e) => {
       e.stopPropagation();
       setMenuFor((v) => v === m.id ? null : m.id);
     } }, /* @__PURE__ */ React.createElement(MoreVertical, { size: 14 }))), menuFor === m.id && /* @__PURE__ */ React.createElement(
@@ -517,16 +594,18 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute }) {
         isAdmin,
         hasThread,
         muted: isMuted,
+        pinned,
         onClose: () => setMenuFor(null),
         onReply: () => setReplyTo(m),
         onThread: () => openThread(m),
         onToggleMute: () => onToggleMute(m.author),
+        onTogglePin: () => togglePin(m),
         onDelete: () => del(m)
       }
     ), m.replyTo && /* @__PURE__ */ React.createElement(ReplyPreview, { replyTo: m.replyTo, byKey, mutedSet, revealed, onReveal: reveal }), /* @__PURE__ */ React.createElement("div", null, m.text)));
-  }), /* @__PURE__ */ React.createElement("div", { ref: endRef })), replyTo && /* @__PURE__ */ React.createElement("div", { style: S.replyBanner }, /* @__PURE__ */ React.createElement(CornerUpLeft, { size: 14, style: { flexShrink: 0, color: ACCENT } }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: S.replyBannerName }, "Replying to ", replyTo.authorName || "message"), /* @__PURE__ */ React.createElement("div", { style: S.replyBannerText }, excerptOf(replyTo.text))), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Cancel reply", onClick: () => setReplyTo(null) }, /* @__PURE__ */ React.createElement(X, { size: 16 }))), /* @__PURE__ */ React.createElement(Composer, { me, onSend: send, placeholder: "Message the whole community\u2026" }), threadRoot && /* @__PURE__ */ React.createElement(ThreadModal, { root: threadRoot, items, me, onClose: () => setThreadRoot(null), onReply: (t, a) => postMessage(t, a, threadRoot) }));
+  }), /* @__PURE__ */ React.createElement("div", { ref: endRef })), replyTo && /* @__PURE__ */ React.createElement("div", { style: S.replyBanner }, /* @__PURE__ */ React.createElement(CornerUpLeft, { size: 14, style: { flexShrink: 0, color: ACCENT } }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: S.replyBannerName }, "Replying to ", senderLabel(replyTo) || "message"), /* @__PURE__ */ React.createElement("div", { style: S.replyBannerText }, excerptOf(replyTo.text))), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Cancel reply", onClick: () => setReplyTo(null) }, /* @__PURE__ */ React.createElement(X, { size: 16 }))), /* @__PURE__ */ React.createElement(Composer, { me, onSend: send, placeholder: "Message the whole community\u2026" }), threadRoot && /* @__PURE__ */ React.createElement(ThreadModal, { root: threadRoot, items, byKey, me, onClose: () => setThreadRoot(null), onReply: (t, a) => postMessage(t, a, threadRoot) }));
 }
-function MsgMenu({ mine, isAdmin, hasThread, muted, onClose, onReply, onThread, onToggleMute, onDelete }) {
+function MsgMenu({ mine, isAdmin, hasThread, muted, pinned, onClose, onReply, onThread, onToggleMute, onTogglePin, onDelete }) {
   const item = (icon, label, onClick, danger) => /* @__PURE__ */ React.createElement(
     "button",
     {
@@ -541,11 +620,11 @@ function MsgMenu({ mine, isAdmin, hasThread, muted, onClose, onReply, onThread, 
     icon,
     /* @__PURE__ */ React.createElement("span", null, label)
   );
-  return /* @__PURE__ */ React.createElement("div", { style: S.menu, onClick: (e) => e.stopPropagation() }, item(/* @__PURE__ */ React.createElement(CornerUpLeft, { size: 15 }), "Reply", onReply), hasThread && item(/* @__PURE__ */ React.createElement(MessageSquare, { size: 15 }), "View message thread", onThread), !mine && item(muted ? /* @__PURE__ */ React.createElement(BellOff, { size: 15 }) : /* @__PURE__ */ React.createElement(Bell, { size: 15 }), muted ? "Unmute user" : "Mute user", onToggleMute), (mine || isAdmin) && item(/* @__PURE__ */ React.createElement(Trash2, { size: 15 }), "Delete message", onDelete, true));
+  return /* @__PURE__ */ React.createElement("div", { style: S.menu, onClick: (e) => e.stopPropagation() }, item(/* @__PURE__ */ React.createElement(CornerUpLeft, { size: 15 }), "Reply", onReply), hasThread && item(/* @__PURE__ */ React.createElement(MessageSquare, { size: 15 }), "View message thread", onThread), isAdmin && item(pinned ? /* @__PURE__ */ React.createElement(PinOff, { size: 15 }) : /* @__PURE__ */ React.createElement(Pin, { size: 15 }), pinned ? "Unpin message" : "Pin message", onTogglePin), !mine && item(muted ? /* @__PURE__ */ React.createElement(BellOff, { size: 15 }) : /* @__PURE__ */ React.createElement(Bell, { size: 15 }), muted ? "Unmute user" : "Mute user", onToggleMute), (mine || isAdmin) && item(/* @__PURE__ */ React.createElement(Trash2, { size: 15 }), "Delete message", onDelete, true));
 }
 function ReplyPreview({ replyTo, byKey, mutedSet, revealed, onReveal }) {
   const parent = byKey.get(replyTo.key);
-  const hiddenMuted = !!parent && mutedSet.has(replyTo.author) && !revealed.has(replyTo.key);
+  const hiddenMuted = !!parent && mutedSet.has(parent.author) && !revealed.has(replyTo.key);
   return /* @__PURE__ */ React.createElement(
     "div",
     {
@@ -556,10 +635,10 @@ function ReplyPreview({ replyTo, byKey, mutedSet, revealed, onReveal }) {
       title: hiddenMuted ? "Show the muted message" : void 0
     },
     /* @__PURE__ */ React.createElement(CornerUpLeft, { size: 13, style: { flexShrink: 0, marginTop: 1 } }),
-    /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, !parent ? /* @__PURE__ */ React.createElement("div", { style: { ...S.replyPreviewName, color: MUTED, fontStyle: "italic" } }, "Deleted") : hiddenMuted ? /* @__PURE__ */ React.createElement("div", { style: { ...S.replyPreviewName, color: MUTED } }, "Muted \u2014 tap to show") : /* @__PURE__ */ React.createElement("div", { style: S.replyPreviewName }, replyTo.authorName || "message"), parent && !hiddenMuted && /* @__PURE__ */ React.createElement("div", { style: S.replyPreviewText }, replyTo.excerpt))
+    /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, !parent ? /* @__PURE__ */ React.createElement("div", { style: { ...S.replyPreviewName, color: MUTED, fontStyle: "italic" } }, "Deleted") : hiddenMuted ? /* @__PURE__ */ React.createElement("div", { style: { ...S.replyPreviewName, color: MUTED } }, "Muted \u2014 tap to show") : /* @__PURE__ */ React.createElement("div", { style: S.replyPreviewName }, senderLabel(parent)), parent && !hiddenMuted && /* @__PURE__ */ React.createElement("div", { style: S.replyPreviewText }, excerptOf(parent.text)))
   );
 }
-function ThreadModal({ root, items, me, onClose, onReply }) {
+function ThreadModal({ root, items, byKey, me, onClose, onReply }) {
   const chain = [];
   const seen = /* @__PURE__ */ new Set([root._key]);
   let frontier = [root._key];
@@ -575,32 +654,29 @@ function ThreadModal({ root, items, me, onClose, onReply }) {
     frontier = next;
   }
   const all = [root, ...chain].sort((a, b) => a.ts - b.ts);
-  return /* @__PURE__ */ React.createElement(Modal, { onClose, title: "Message thread" }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8, maxHeight: "52vh", overflowY: "auto" } }, all.map((m, i) => /* @__PURE__ */ React.createElement("div", { key: m.id, style: { ...S.reply, ...i === 0 ? S.threadRoot : {} } }, /* @__PURE__ */ React.createElement("div", { style: S.bubbleHead }, /* @__PURE__ */ React.createElement("span", { style: { color: SENDER, fontWeight: 600, fontSize: 12 } }, m.anon && /* @__PURE__ */ React.createElement(EyeOff, { size: 10, style: { verticalAlign: -1, marginRight: 3 } }), senderLabel(m)), /* @__PURE__ */ React.createElement("span", { style: S.time }, fmtTime(m.ts)), i === 0 && /* @__PURE__ */ React.createElement("span", { style: { ...S.pill, background: "#2dd4bf22", color: ACCENT, marginLeft: "auto" } }, "ORIGINAL")), m.replyTo && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: MUTED, marginBottom: 2 } }, "\u21A9 ", m.replyTo.authorName || "message"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14 } }, m.text)))), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement(Composer, { me, onSend: (t, a) => onReply(t, a), placeholder: "Reply in this thread\u2026" })));
+  return /* @__PURE__ */ React.createElement(Modal, { onClose, title: "Message thread" }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8, maxHeight: "52vh", overflowY: "auto" } }, all.map((m, i) => /* @__PURE__ */ React.createElement("div", { key: m.id, style: { ...S.reply, ...i === 0 ? S.threadRoot : {} } }, /* @__PURE__ */ React.createElement("div", { style: S.bubbleHead }, /* @__PURE__ */ React.createElement("span", { style: { color: SENDER, fontWeight: 600, fontSize: 12 } }, m.anon && /* @__PURE__ */ React.createElement(EyeOff, { size: 10, style: { verticalAlign: -1, marginRight: 3 } }), senderLabel(m)), /* @__PURE__ */ React.createElement("span", { style: S.time }, fmtTime(m.ts)), i === 0 && /* @__PURE__ */ React.createElement("span", { style: { ...S.pill, background: "#2dd4bf22", color: ACCENT, marginLeft: "auto" } }, "ORIGINAL")), m.replyTo && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: MUTED, marginBottom: 2 } }, "\u21A9 ", (() => {
+    const par = byKey && byKey.get(m.replyTo.key);
+    return par ? senderLabel(par) : "Deleted";
+  })()), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14 } }, m.text)))), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement(Composer, { me, onSend: (t, a) => onReply(t, a), placeholder: "Reply in this thread\u2026" })));
 }
 function Forum({ session, group, me, isAdmin, mutes }) {
   const prefix = postPrefix(group.id);
   const [items, reload] = useItems(prefix, 3e3);
   const [composing, setComposing] = useState(false);
   const post = async (title, body, anon) => {
-    const id = uid(), ts = now();
-    await sset(`${prefix}${ts}:${id}`, { id, ts, title, text: body, anon, author: session.key, authorName: me.username, gid: group.id, replies: [] });
+    await postCreate(session, group.id, title, body, anon);
     reload();
   };
   const del = async (p) => {
-    await sdelete(p._key);
+    await postDelete(session, group.id, p._key);
     reload();
   };
-  const stripKey = (o) => {
-    const { _key, ...r } = o;
-    return r;
-  };
   const addReply = async (p, text, anon) => {
-    const reply = { id: uid(), ts: now(), text, anon, author: session.key, authorName: me.username, gid: group.id };
-    await sset(p._key, stripKey({ ...p, replies: [...p.replies || [], reply] }));
+    await postReply(session, group.id, p._key, text, anon);
     reload();
   };
   const delReply = async (p, rid) => {
-    await sset(p._key, stripKey({ ...p, replies: (p.replies || []).filter((r) => r.id !== rid) }));
+    await postDeleteReply(session, group.id, p._key, rid);
     reload();
   };
   const mutedSet = new Set(mutes || []);
@@ -639,7 +715,7 @@ function InviteModal({ group, session, onClose, onChange }) {
   };
   const genOnce = async () => {
     setBusy(true);
-    const r = await api.post("/api/group/invite", { key: session.key, gid: group.id });
+    const r = await api.post("/api/group/invite", { key: session.key, sessionId: session.sessionId, gid: group.id });
     setBusy(false);
     if (r && r.ok) {
       setOnce(r.code);
@@ -656,16 +732,16 @@ function AdminModal({ session, group, isOwner, onClose, onChange, onDeleted }) {
   const [confirmDel, setConfirmDel] = useState(false);
   const [busyDel, setBusyDel] = useState(false);
   const banUser = async (targetKey) => {
-    await api.post("/api/group/ban", { ownerKey: session.key, gid: group.id, targetKey });
+    await api.post("/api/group/ban", { key: session.key, sessionId: session.sessionId, gid: group.id, targetKey });
     onChange();
   };
   const removeUser = async (targetKey) => {
     if (targetKey === group.ownerKey) return;
-    await api.post("/api/group/remove", { key: session.key, gid: group.id, targetKey });
+    await api.post("/api/group/remove", { key: session.key, sessionId: session.sessionId, gid: group.id, targetKey });
     onChange();
   };
   const toggleAdmin = async (targetKey) => {
-    await api.post("/api/group/toggleadmin", { key: session.key, gid: group.id, targetKey });
+    await api.post("/api/group/toggleadmin", { key: session.key, sessionId: session.sessionId, gid: group.id, targetKey });
     onChange();
   };
   return /* @__PURE__ */ React.createElement(Modal, { onClose, title: "Manage members" }, /* @__PURE__ */ React.createElement("p", { style: S.muted }, "Admins can remove members & delete messages. ", isOwner ? "As owner, you can permanently ban." : "Only the owner can permanently ban."), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10, display: "flex", flexDirection: "column", gap: 8 } }, members.map(([mKey, info]) => {
@@ -674,7 +750,7 @@ function AdminModal({ session, group, isOwner, onClose, onChange, onDeleted }) {
     return /* @__PURE__ */ React.createElement("div", { key: mKey, style: S.memberRow }, /* @__PURE__ */ React.createElement("div", { style: S.groupAvatar }, (info.username || "?").slice(0, 1).toUpperCase()), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600 } }, info.username || "(no name yet)", " ", mKey === session.key && "(you)"), /* @__PURE__ */ React.createElement("div", { style: S.muted }, isOwn ? "Owner" : isAdm ? "Admin" : "Member")), !isOwn && /* @__PURE__ */ React.createElement(React.Fragment, null, isOwner && /* @__PURE__ */ React.createElement("button", { style: S.miniBtn, title: "Toggle admin", onClick: () => toggleAdmin(mKey) }, /* @__PURE__ */ React.createElement(Crown, { size: 14, color: isAdm ? "#fbbf24" : "#6b7a85" })), /* @__PURE__ */ React.createElement("button", { style: S.miniBtn, title: "Remove (can rejoin)", onClick: () => removeUser(mKey) }, /* @__PURE__ */ React.createElement(UserMinus, { size: 14, color: "#f59e0b" })), isOwner && /* @__PURE__ */ React.createElement("button", { style: S.miniBtn, title: "Ban permanently", onClick: () => banUser(mKey) }, /* @__PURE__ */ React.createElement(Ban, { size: 14, color: "#f87171" }))));
   })), isOwner && /* @__PURE__ */ React.createElement("div", { style: S.dangerZone }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, color: "#f87171", marginBottom: 6 } }, "Danger zone"), !confirmDel ? /* @__PURE__ */ React.createElement("button", { style: S.dangerBtn, onClick: () => setConfirmDel(true) }, /* @__PURE__ */ React.createElement(Trash2, { size: 15 }), " Delete this community") : /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("p", { style: { ...S.muted, marginBottom: 8 } }, "This permanently deletes ", /* @__PURE__ */ React.createElement("b", null, group.name), " and all its messages and posts for everyone. This can't be undone."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8 } }, /* @__PURE__ */ React.createElement("button", { style: { ...S.secondaryFull, flex: 1 }, disabled: busyDel, onClick: () => setConfirmDel(false) }, "Cancel"), /* @__PURE__ */ React.createElement("button", { style: { ...S.dangerBtn, flex: 1 }, disabled: busyDel, onClick: async () => {
     setBusyDel(true);
-    const r = await api.post("/api/group/delete", { ownerKey: session.key, gid: group.id });
+    const r = await api.post("/api/group/delete", { key: session.key, sessionId: session.sessionId, gid: group.id });
     setBusyDel(false);
     if (r && r.ok) {
       onClose();
@@ -743,7 +819,15 @@ const S = {
   segment: { display: "flex", gap: 4, padding: 4, background: PANEL2, border: `1px solid ${LINE}`, borderRadius: 12, marginBottom: 12 },
   segBtn: { flex: 1, background: "transparent", border: "none", color: MUTED, padding: "9px 6px", borderRadius: 9, cursor: "pointer", fontWeight: 600, fontSize: 13, fontFamily: "inherit" },
   segBtnActive: { background: PANEL, color: TEXT },
-  composer: { display: "flex", gap: 8, padding: 12, borderTop: `1px solid ${LINE}`, background: PANEL, alignItems: "center" },
+  composer: { position: "relative", display: "flex", gap: 8, padding: 12, borderTop: `1px solid ${LINE}`, background: PANEL, alignItems: "center" },
+  emojiPanel: { position: "absolute", bottom: 58, left: 8, right: 8, zIndex: 40, display: "grid", gridTemplateColumns: "repeat(8, 1fr)", gap: 2, padding: 8, background: "#0f1620", border: `1px solid ${LINE}`, borderRadius: 14, boxShadow: "0 12px 32px rgba(0,0,0,.55)", maxHeight: 200, overflowY: "auto" },
+  emojiBtn: { background: "transparent", border: "none", cursor: "pointer", fontSize: 20, lineHeight: 1, padding: 4, borderRadius: 8, fontFamily: "inherit" },
+  pinBar: { display: "flex", alignItems: "center", gap: 9, width: "100%", textAlign: "left", padding: "8px 14px", background: "#0f1620", border: "none", borderBottom: `1px solid ${LINE}`, color: TEXT, cursor: "pointer", fontFamily: "inherit" },
+  pinBarLabel: { fontSize: 10, fontWeight: 700, color: ACCENT, textTransform: "uppercase", letterSpacing: 0.6 },
+  pinBarText: { fontSize: 13, color: MUTED, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  result: { display: "flex", flexDirection: "column", gap: 3, width: "100%", textAlign: "left", background: PANEL, border: `1px solid ${LINE}`, borderRadius: 12, padding: "10px 12px", color: TEXT, cursor: "pointer", fontFamily: "inherit" },
+  resultText: { fontSize: 14, color: "#cdd9e1", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  bubbleFlash: { boxShadow: `0 0 0 2px ${ACCENT}` },
   composerInput: { flex: 1, background: PANEL2, border: `1px solid ${LINE}`, color: TEXT, borderRadius: 22, padding: "11px 16px", outline: "none", fontSize: 15, fontFamily: "inherit" },
   sendBtn: { background: ACCENT, color: "#04201d", border: "none", borderRadius: "50%", width: 42, height: 42, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
   post: { background: PANEL, border: `1px solid ${LINE}`, borderRadius: 16, padding: 14 },
