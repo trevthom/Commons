@@ -536,7 +536,7 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
         }
         const root = rootOf(m);
         const hasThread = !!root && descendants(root._key).length > 0;
-        return <div key={m.id} id={"msg-" + m.id} style={{ ...S.bubbleRow, justifyContent: mine ? "flex-end" : "flex-start" }} className="reveal">
+        return <div key={m.id} id={"msg-" + m.id} style={{ ...S.bubbleRow, justifyContent: mine ? "flex-end" : "flex-start", ...(menuFor === m.id ? S.bubbleRowActive : {}) }} className="reveal">
           <div style={{ ...S.bubble, ...(mine ? S.bubbleMine : {}), ...(highlight === m.id ? S.bubbleFlash : {}) }}>
             <div style={S.bubbleHead}>
               <span style={{ color: SENDER, fontWeight: 600 }}>{m.anon && <EyeOff size={11} style={{ verticalAlign: -1, marginRight: 3 }} />}{senderLabel(m)}</span>
@@ -573,7 +573,7 @@ function MsgMenu({ mine, isAdmin, hasThread, muted, pinned, onClose, onReply, on
     <button key={label} style={{ ...S.menuItem, ...(danger ? S.menuItemDanger : {}) }}
       onClick={(e) => { e.stopPropagation(); onClose(); onClick(); }}>{icon}<span>{label}</span></button>
   );
-  return <div style={S.menu} onClick={(e) => e.stopPropagation()}>
+  return <div data-role="msg-menu" style={S.menu} onClick={(e) => e.stopPropagation()}>
     {item(<CornerUpLeft size={15} />, "Reply", onReply)}
     {hasThread && item(<MessageSquare size={15} />, "View message thread", onThread)}
     {isAdmin && item(pinned ? <PinOff size={15} /> : <Pin size={15} />, pinned ? "Unpin message" : "Pin message", onTogglePin)}
@@ -837,6 +837,10 @@ const S = {
   searchInput: { flex: 1, background: PANEL2, border: `1px solid ${LINE}`, color: TEXT, borderRadius: 20, padding: "8px 14px", outline: "none", fontSize: 14, fontFamily: "inherit" },
   feed: { flex: 1, overflowY: "auto", padding: 14, display: "flex", flexDirection: "column", gap: 12 },
   bubbleRow: { display: "flex" },
+  // A message row is its own stacking context (the `.reveal` animation), which
+  // traps the absolutely-positioned menu's z-index. While a menu is open we lift
+  // the entire row so the following message can never paint over the menu.
+  bubbleRowActive: { position: "relative", zIndex: 40 },
   // Telegram-style: bubbles use most of the width, and there are exactly two
   // message colors — the viewer's own (#123f38) and everybody else's (PANEL2).
   bubble: { position: "relative", maxWidth: "92%", background: PANEL2, border: `1px solid ${LINE}`, borderRadius: 16, borderBottomLeftRadius: 5, padding: "9px 13px", fontSize: 15, lineHeight: 1.4, boxShadow: "0 1px 2px rgba(0,0,0,.35)" },
