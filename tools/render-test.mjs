@@ -79,19 +79,24 @@ check("the create-community modal is open", !!modal());
 const nameInput = inputByPlaceholder("Oak Street Neighbors", modal());
 check("the community-name field is present", !!nameInput);
 setInput(nameInput, "Testville");
-check("submitted the new community", click("Create", modal()));
+// Enter should activate the dialog's primary button, like submitting a form.
+nameInput.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 await sleep(900);
+check("Enter in the create dialog submitted it ('Create')", /Pick your name/.test(screen()) && !modal());
 check("the username picker appeared", /Pick your name/.test(screen()));
 
-setInput(inputByPlaceholder("e.g. jordan_m"), "tester");
-check("claimed a username", click("Join community"));
+const usernameField = inputByPlaceholder("e.g. jordan_m");
+setInput(usernameField, "tester");
+usernameField.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 await sleep(900);
+check("Enter in the username picker submitted it ('Join community')", /Testville/.test(screen()) && !/Pick your name/.test(screen()));
 check("the group screen rendered", /Testville/.test(screen()));
 
 // --- requested UI changes on the group screen ---
 check("the second tab is labelled 'Forum'", /Forum/.test(screen()) && !/Neighborhood/.test(screen()));
 check("the invite icon has hover text", titled("Invite people"));
 check("the admin icon has hover text", titled("Manage members"));
+check("the username-change control has hover text", titled("Change your username"));
 check("the header anonymous toggle is gone", !titled("Posting anonymously by default") && !titled("Posting with your username"));
 check("the per-message anonymous toggle remains", titled("Sending as tester"));
 check("a search box is present", !!inputByPlaceholder("Search all messages"));
@@ -272,6 +277,56 @@ check("exactly two message colors exist", bubbleColors.size === 2, [...bubbleCol
 const nameColors = new Set(bubbles.map((d) => d.querySelector("span") && d.querySelector("span").style.color));
 check("sender names all share one color", nameColors.size === 1, [...nameColors].join(", "));
 
+// --- Telegram-style timestamp: tiny text in the bottom-right corner, Eastern ---
+const stampFor = (bubble) => bubble.querySelector('[data-role="msg-stamp"]');
+check("every message shows a timestamp", bubbles.every((b) => !!stampFor(b)));
+check("the timestamp is the bubble's last element (bottom-right)", myBubble.lastElementChild === stampFor(myBubble) && bobBubble.lastElementChild === stampFor(bobBubble));
+check("the timestamp is right-aligned", stampFor(myBubble).style.textAlign === "right");
+const stampText = stampFor(myBubble).textContent;
+check("the timestamp ends in EST", /EST$/.test(stampText), stampText);
+check("the timestamp carries both a date and a time", /\b[A-Z][a-z]{2} \d{1,2}\b/.test(stampText) && /\d{1,2}:\d{2}\s?[AP]M/.test(stampText), stampText);
+const sentMsgs = await (await fetch(BASE + "/api/mget?prefix=" + encodeURIComponent("msg:" + testGroup.id + ":general:"))).json();
+const bananaMsg = sentMsgs.items.map(([, v]) => v).find((m) => m.text === "banana bread");
+const ny = { timeZone: "America/New_York" };
+const expectedStamp = new Date(bananaMsg.ts).toLocaleDateString("en-US", { ...ny, month: "short", day: "numeric" })
+  + " · " + new Date(bananaMsg.ts).toLocaleTimeString("en-US", { ...ny, hour: "numeric", minute: "2-digit" }) + " EST";
+check("the timestamp is that message's Eastern time", stampText === expectedStamp, `${stampText} vs ${expectedStamp}`);
+
+// --- unread inbox: count, preview, and the jump to the first unseen message ---
+// The viewer opened the room before Bob wrote anything, so his two messages are
+// still unread. Leaving to the home screen must surface them, and re-opening
+// must land on the first one.
+document.querySelector('[title="Back to your communities"]').click();
+await sleep(800);
+check("the home screen rendered again", /Your communities/.test(screen()));
+const card = document.querySelector('[data-role="group-card"]');
+check("the community card is present", !!card);
+const badge = card && card.querySelector('[data-role="unread-badge"]');
+check("the card shows the unread count", !!badge && badge.textContent.trim() === "2", badge ? badge.textContent : "no badge");
+check("the card previews the newest message", !!card && /bob solo/.test(card.textContent), card ? card.textContent : "");
+check("the preview names who wrote it", !!card && /bob: bob solo/.test(card.textContent.replace(/\s+/g, " ")), card ? card.textContent : "");
+card.click();
+await sleep(1500);
+const feed = document.querySelector('[data-role="feed"]');
+check("the room opened on its message feed", !!feed);
+const anchorId = feed && feed.getAttribute("data-unread-anchor");
+const firstUnseen = [...document.querySelectorAll('#root div[id^="msg-"]')].find((d) => (d.textContent || "").includes("from bob"));
+check("the room jumped to the first unseen message", !!firstUnseen && anchorId === firstUnseen.id.replace(/^msg-/, ""), `anchor=${anchorId}`);
+check("the anchored message is Bob's earlier one", !!firstUnseen && /from bob/.test(firstUnseen.textContent) && !/bob solo/.test(firstUnseen.textContent));
+const downBtn = document.querySelector('[data-role="scroll-down"]');
+check("an arrow offers to jump to the newest messages", !!downBtn);
+downBtn.click();
+await sleep(400);
+check("the arrow clears once the reader is at the newest messages", !document.querySelector('[data-role="scroll-down"]'));
+check("jumping to the bottom forgets the anchor", !document.querySelector('[data-role="feed"]').getAttribute("data-unread-anchor"));
+document.querySelector('[title="Back to your communities"]').click();
+await sleep(900);
+const card2 = document.querySelector('[data-role="group-card"]');
+check("reading the room cleared the unread badge", !!card2 && !card2.querySelector('[data-role="unread-badge"]'), card2 ? card2.textContent : "no card");
+card2.click();
+await sleep(1500);
+check("the room is back after the second visit", !!document.querySelector('[data-role="feed"]'));
+
 // --- the menu must never hang off the screen edge ---
 // The menu is at least 178px wide, and a short left-aligned message leaves
 // almost no room to its left. Anchoring it to the bubble's right edge would
@@ -334,6 +389,25 @@ check("the reply preview reads Muted", !!mutedPreview && /Muted/.test(mutedPrevi
 mutedPreview.click();
 await sleep(300);
 check("tapping the preview reveals the muted message", /from bob/.test(screen()) && previewFor("reply to bob").getAttribute("data-muted") === "0");
+
+// --- a re-mute after an unmute must hide the content again ---
+// A tapped reveal only bypasses the mute that was active at that moment. If it
+// outlived the mute, unmuting and muting the same person again would leave the
+// messages (and their reply previews) looking unmuted — muting "not working".
+optionsBtnFor("from bob").click();
+await sleep(150);
+check("the revealed message's menu offers Unmute", /Unmute user/.test(screen()));
+check("clicked Unmute user", click("Unmute user"));
+await sleep(400);
+check("unmuting brings the other member's messages back", /bob solo/.test(screen()));
+optionsBtnFor("from bob").click();
+await sleep(150);
+check("clicked Mute user again", click("Mute user"));
+await sleep(400);
+check("re-muting hides the un-replied message again", !/bob solo/.test(screen()));
+const remuted = previewFor("reply to bob");
+check("re-muting restores the Muted placeholder", /Muted message/.test(screen()));
+check("the reply preview reads Muted again after re-muting", !!remuted && remuted.getAttribute("data-muted") === "1" && /Muted/.test(remuted.textContent));
 
 // --- pinning (admins only, newest first, tap the bar to cycle) ---
 optionsBtnFor("banana bread").click();

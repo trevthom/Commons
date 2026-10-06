@@ -28,7 +28,8 @@ const {
   BellOff,
   Smile,
   Pin,
-  PinOff
+  PinOff,
+  ChevronDown
 } = lucide;
 const api = {
   async post(path, body) {
@@ -119,6 +120,12 @@ const now = () => Date.now();
 const groupKey = (id) => `group:${id}`;
 const msgPrefix = (g) => `msg:${g}:general:`;
 const postPrefix = (g) => `post:${g}:`;
+const onEnter = (fn) => (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    fn();
+  }
+};
 const ANON_NAMES = ["Maple", "Cedar", "Willow", "Birch", "Aspen", "Sage", "Fern", "Heron", "Otter", "Robin", "Wren", "Lark"];
 const anonLabel = (seed) => {
   let h = 0;
@@ -238,6 +245,7 @@ function Login({ onAuthed, kicked, clearKicked }) {
     } else setErr("Could not create account.");
   };
   const login = async () => {
+    if (!keyInput.trim() || busy) return;
     setBusy(true);
     setErr("");
     const key = keyInput.toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -249,7 +257,7 @@ function Login({ onAuthed, kicked, clearKicked }) {
   return /* @__PURE__ */ React.createElement("div", { style: S.center }, /* @__PURE__ */ React.createElement("div", { style: S.card, className: "reveal" }, /* @__PURE__ */ React.createElement("div", { style: S.brand }, "\u25C7 Commons"), /* @__PURE__ */ React.createElement("p", { style: S.sub }, "A space for communities."), kicked && /* @__PURE__ */ React.createElement("div", { style: S.warn }, "You were logged out because your account signed in on another device."), mode === "choose" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("button", { style: { ...S.primary, marginTop: 8 }, disabled: busy, onClick: create }, /* @__PURE__ */ React.createElement(Key, { size: 18 }), " Create a new account"), /* @__PURE__ */ React.createElement("button", { style: { ...S.secondaryFull, marginTop: 10 }, onClick: () => {
     setMode("haveKey");
     clearKicked();
-  } }, /* @__PURE__ */ React.createElement(LogIn, { size: 18 }), " I have a login key"), err && /* @__PURE__ */ React.createElement("div", { style: S.error }, err)), mode === "haveKey" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("label", { style: S.label }, "Login key"), /* @__PURE__ */ React.createElement("input", { style: { ...S.input, fontFamily: "monospace", letterSpacing: 1 }, value: keyInput, onChange: (e) => setKeyInput(e.target.value), placeholder: "your 16-character key" }), err && /* @__PURE__ */ React.createElement("div", { style: S.error }, err), /* @__PURE__ */ React.createElement("button", { style: { ...S.primary, marginTop: 14, opacity: keyInput.trim() ? 1 : 0.5 }, disabled: !keyInput.trim() || busy, onClick: login }, busy ? "Checking\u2026" : "Log in"), /* @__PURE__ */ React.createElement("button", { style: S.ghost, onClick: () => {
+  } }, /* @__PURE__ */ React.createElement(LogIn, { size: 18 }), " I have a login key"), err && /* @__PURE__ */ React.createElement("div", { style: S.error }, err)), mode === "haveKey" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("label", { style: S.label }, "Login key"), /* @__PURE__ */ React.createElement("input", { style: { ...S.input, fontFamily: "monospace", letterSpacing: 1 }, value: keyInput, onChange: (e) => setKeyInput(e.target.value), onKeyDown: onEnter(login), placeholder: "your 16-character key" }), err && /* @__PURE__ */ React.createElement("div", { style: S.error }, err), /* @__PURE__ */ React.createElement("button", { style: { ...S.primary, marginTop: 14, opacity: keyInput.trim() ? 1 : 0.5 }, disabled: !keyInput.trim() || busy, onClick: login }, busy ? "Checking\u2026" : "Log in"), /* @__PURE__ */ React.createElement("button", { style: S.ghost, onClick: () => {
     setMode("choose");
     setErr("");
   } }, "Back")), mode === "created" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement("div", { style: S.warn }, "Save this login key. It's the only way back into your account, and it only works on ", /* @__PURE__ */ React.createElement("b", null, "this server"), ". We can't recover it."), /* @__PURE__ */ React.createElement("div", { style: S.keyBox }, /* @__PURE__ */ React.createElement("span", { style: { fontFamily: "monospace", fontSize: 16, letterSpacing: 1, flex: 1, wordBreak: "break-all" } }, createdKey.replace(/(.{4})/g, "$1 ").trim()), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, onClick: async () => {
@@ -263,20 +271,35 @@ function Home({ session, pendingInvite, clearInvite, onOpen, onLogout }) {
   const [creating, setCreating] = useState(false);
   const [joining, setJoining] = useState(false);
   const [newName, setNewName] = useState("");
+  const [inbox, setInbox] = useState({});
   const refresh = useCallback(async () => {
     const all = await slistValues("group:");
     const gs = all.filter((g) => g && g.members && g.members[session.key] && !(g.banned || []).includes(session.key));
     gs.sort((a, b) => b.createdAt - a.createdAt);
     setGroups(gs);
+    const next = {};
+    await Promise.all(gs.map(async (g) => {
+      const msgs = await slistValues(msgPrefix(g.id));
+      msgs.sort((a, b) => a.ts - b.ts);
+      const member = g.members[session.key];
+      const seen = getSeen(g.id, session.key) || member && member.joinedAt || 0;
+      const unread = msgs.filter((m) => !m.system && m.author !== session.key && m.ts > seen).length;
+      const last = msgs.length ? msgs[msgs.length - 1] : null;
+      next[g.id] = { unread, preview: last ? previewOf(last, session.key) : "" };
+    }));
+    setInbox(next);
   }, [session.key]);
   useEffect(() => {
     refresh();
+    const t = setInterval(refresh, 4e3);
+    return () => clearInterval(t);
   }, [refresh]);
   useEffect(() => {
     if (pendingInvite) setJoining(true);
   }, [pendingInvite]);
   const createGroup = async () => {
     const name = newName.trim();
+    if (!name) return;
     const r = await api.post("/api/group/create", { key: session.key, sessionId: session.sessionId, name });
     if (!r || !r.ok) return;
     setCreating(false);
@@ -286,8 +309,9 @@ function Home({ session, pendingInvite, clearInvite, onOpen, onLogout }) {
   };
   return /* @__PURE__ */ React.createElement("div", { style: S.screen }, /* @__PURE__ */ React.createElement("div", { style: S.appHeader }, /* @__PURE__ */ React.createElement("div", { style: { flex: 1, fontWeight: 700, fontSize: 18 } }, "Your communities"), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Log out", onClick: onLogout }, /* @__PURE__ */ React.createElement(LogOut, { size: 18 }))), /* @__PURE__ */ React.createElement("div", { style: S.scroll }, groups.length === 0 && /* @__PURE__ */ React.createElement("div", { style: S.empty, className: "reveal" }, /* @__PURE__ */ React.createElement(Users, { size: 34, style: { opacity: 0.5 } }), /* @__PURE__ */ React.createElement("p", null, "No communities yet."), /* @__PURE__ */ React.createElement("p", { style: S.muted }, "Create one or join with an invite.")), groups.map((g) => {
     const me = g.members[session.key];
-    return /* @__PURE__ */ React.createElement("button", { key: g.id, style: S.groupCard, className: "reveal", onClick: () => onOpen(g) }, /* @__PURE__ */ React.createElement("div", { style: S.groupAvatar }, g.name.slice(0, 1).toUpperCase()), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, textAlign: "left" } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 600 } }, g.name), /* @__PURE__ */ React.createElement("div", { style: S.muted }, Object.keys(g.members).length, " member(s)", me && me.username ? " \xB7 " + me.username : " \xB7 pick a name")), g.ownerKey === session.key ? /* @__PURE__ */ React.createElement(Crown, { size: 16, color: "#fbbf24" }) : (g.admins || []).includes(session.key) ? /* @__PURE__ */ React.createElement(Shield, { size: 15, color: "#7dd3fc" }) : null);
-  })), /* @__PURE__ */ React.createElement("div", { style: S.bottomBar }, /* @__PURE__ */ React.createElement("button", { style: S.secondary, onClick: () => setJoining(true) }, /* @__PURE__ */ React.createElement(LogIn, { size: 18 }), " Join"), /* @__PURE__ */ React.createElement("button", { style: S.primary, onClick: () => setCreating(true) }, /* @__PURE__ */ React.createElement(Plus, { size: 18 }), " Create")), creating && /* @__PURE__ */ React.createElement(Modal, { onClose: () => setCreating(false), title: "Create community" }, /* @__PURE__ */ React.createElement("label", { style: S.label }, "Community name"), /* @__PURE__ */ React.createElement("input", { style: S.input, value: newName, onChange: (e) => setNewName(e.target.value), placeholder: "Oak Street Neighbors", maxLength: 40 }), /* @__PURE__ */ React.createElement("button", { style: { ...S.primary, marginTop: 16, opacity: newName.trim() ? 1 : 0.5 }, disabled: !newName.trim(), onClick: createGroup }, "Create")), joining && /* @__PURE__ */ React.createElement(JoinModal, { session, prefill: pendingInvite, onClose: () => {
+    const info = inbox[g.id] || {};
+    return /* @__PURE__ */ React.createElement("button", { key: g.id, "data-role": "group-card", style: S.groupCard, className: "reveal", onClick: () => onOpen(g) }, /* @__PURE__ */ React.createElement("div", { style: S.groupAvatar }, g.name.slice(0, 1).toUpperCase()), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0, textAlign: "left" } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6 } }, /* @__PURE__ */ React.createElement("span", { style: { fontWeight: 600 } }, g.name), g.ownerKey === session.key ? /* @__PURE__ */ React.createElement(Crown, { size: 14, color: "#fbbf24" }) : (g.admins || []).includes(session.key) ? /* @__PURE__ */ React.createElement(Shield, { size: 13, color: "#7dd3fc" }) : null), /* @__PURE__ */ React.createElement("div", { style: { ...S.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, info.preview || `${Object.keys(g.members).length} member(s)${me && me.username ? " \xB7 " + me.username : " \xB7 pick a name"}`)), info.unread > 0 && /* @__PURE__ */ React.createElement("span", { "data-role": "unread-badge", style: S.badge }, info.unread > 99 ? "99+" : info.unread));
+  })), /* @__PURE__ */ React.createElement("div", { style: S.bottomBar }, /* @__PURE__ */ React.createElement("button", { style: S.secondary, onClick: () => setJoining(true) }, /* @__PURE__ */ React.createElement(LogIn, { size: 18 }), " Join"), /* @__PURE__ */ React.createElement("button", { style: S.primary, onClick: () => setCreating(true) }, /* @__PURE__ */ React.createElement(Plus, { size: 18 }), " Create")), creating && /* @__PURE__ */ React.createElement(Modal, { onClose: () => setCreating(false), title: "Create community" }, /* @__PURE__ */ React.createElement("label", { style: S.label }, "Community name"), /* @__PURE__ */ React.createElement("input", { style: S.input, value: newName, onChange: (e) => setNewName(e.target.value), onKeyDown: onEnter(createGroup), placeholder: "Oak Street Neighbors", maxLength: 40 }), /* @__PURE__ */ React.createElement("button", { style: { ...S.primary, marginTop: 16, opacity: newName.trim() ? 1 : 0.5 }, disabled: !newName.trim(), onClick: createGroup }, "Create")), joining && /* @__PURE__ */ React.createElement(JoinModal, { session, prefill: pendingInvite, onClose: () => {
     setJoining(false);
     clearInvite();
   }, onJoined: (g) => {
@@ -302,9 +326,10 @@ function JoinModal({ session, prefill, onClose, onJoined }) {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const doJoin = async () => {
+    const raw = code.trim();
+    if (!raw || busy) return;
     setBusy(true);
     setErr("");
-    const raw = code.trim();
     const r = await api.post("/api/group/join", { key: session.key, sessionId: session.sessionId, code: raw });
     setBusy(false);
     if (r && r.ok) return onJoined(r.group);
@@ -316,7 +341,7 @@ function JoinModal({ session, prefill, onClose, onJoined }) {
     const v = e.target.value;
     const m = v.match(/join=([A-Za-z0-9_-]+)/);
     setCode(m ? m[1] : v);
-  }, placeholder: "paste invite link or code" }), err && /* @__PURE__ */ React.createElement("div", { style: S.error }, err), /* @__PURE__ */ React.createElement("button", { style: { ...S.primary, marginTop: 16, opacity: code.trim() ? 1 : 0.5 }, disabled: !code.trim() || busy, onClick: doJoin }, busy ? "Joining\u2026" : "Join community"));
+  }, onKeyDown: onEnter(doJoin), placeholder: "paste invite link or code" }), err && /* @__PURE__ */ React.createElement("div", { style: S.error }, err), /* @__PURE__ */ React.createElement("button", { style: { ...S.primary, marginTop: 16, opacity: code.trim() ? 1 : 0.5 }, disabled: !code.trim() || busy, onClick: doJoin }, busy ? "Joining\u2026" : "Join community"));
 }
 function GroupApp({ session, group, setGroup, tab, setTab, onLeave, onLogout }) {
   const [showInvite, setShowInvite] = useState(false);
@@ -341,7 +366,7 @@ function GroupApp({ session, group, setGroup, tab, setTab, onLeave, onLogout }) 
     return () => clearInterval(t);
   }, [reloadGroup]);
   if (needsName) return /* @__PURE__ */ React.createElement(UsernamePicker, { session, group, onSet: (g) => setGroup(g), onLeave });
-  return /* @__PURE__ */ React.createElement("div", { style: S.screen }, /* @__PURE__ */ React.createElement("div", { style: S.appHeader }, /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, onClick: onLeave }, /* @__PURE__ */ React.createElement(ChevronLeft, { size: 20 })), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700 } }, group.name), /* @__PURE__ */ React.createElement("button", { style: S.nameBtn, onClick: () => setChangingName(true) }, me.username, isOwner ? " \xB7 owner" : isAdmin ? " \xB7 admin" : "", " \u270E")), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Invite people", onClick: () => setShowInvite(true) }, /* @__PURE__ */ React.createElement(QrCode, { size: 18 })), isAdmin && /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Manage members", onClick: () => setShowAdmin(true) }, /* @__PURE__ */ React.createElement(Shield, { size: 18 })), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Log out", onClick: onLogout }, /* @__PURE__ */ React.createElement(LogOut, { size: 18 }))), /* @__PURE__ */ React.createElement("div", { style: S.tabs }, /* @__PURE__ */ React.createElement("button", { style: { ...S.tab, ...tab === "general" ? S.tabActive : {} }, onClick: () => setTab("general") }, /* @__PURE__ */ React.createElement(MessageSquare, { size: 16 }), " General"), /* @__PURE__ */ React.createElement("button", { style: { ...S.tab, ...tab === "forum" ? S.tabActive : {} }, onClick: () => setTab("forum") }, /* @__PURE__ */ React.createElement(MapPin, { size: 16 }), " Forum")), tab === "general" ? /* @__PURE__ */ React.createElement(GeneralChat, { session, group, me, isAdmin, mutes, onToggleMute: toggleMute, onGroupChange: reloadGroup }) : /* @__PURE__ */ React.createElement(Forum, { session, group, me, isAdmin, mutes }), showInvite && /* @__PURE__ */ React.createElement(InviteModal, { group, session, onClose: () => setShowInvite(false), onChange: reloadGroup }), showAdmin && isAdmin && /* @__PURE__ */ React.createElement(AdminModal, { session, group, isOwner, onClose: () => setShowAdmin(false), onChange: reloadGroup, onDeleted: onLeave }), changingName && /* @__PURE__ */ React.createElement(ChangeNameModal, { session, group, me, onClose: () => setChangingName(false), onChanged: (g) => {
+  return /* @__PURE__ */ React.createElement("div", { style: S.screen }, /* @__PURE__ */ React.createElement("div", { style: S.appHeader }, /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Back to your communities", onClick: onLeave }, /* @__PURE__ */ React.createElement(ChevronLeft, { size: 20 })), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700 } }, group.name), /* @__PURE__ */ React.createElement("button", { style: S.nameBtn, title: "Change your username", onClick: () => setChangingName(true) }, me.username, isOwner ? " \xB7 owner" : isAdmin ? " \xB7 admin" : "", " \u270E")), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Invite people", onClick: () => setShowInvite(true) }, /* @__PURE__ */ React.createElement(QrCode, { size: 18 })), isAdmin && /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Manage members", onClick: () => setShowAdmin(true) }, /* @__PURE__ */ React.createElement(Shield, { size: 18 })), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Log out", onClick: onLogout }, /* @__PURE__ */ React.createElement(LogOut, { size: 18 }))), /* @__PURE__ */ React.createElement("div", { style: S.tabs }, /* @__PURE__ */ React.createElement("button", { style: { ...S.tab, ...tab === "general" ? S.tabActive : {} }, onClick: () => setTab("general") }, /* @__PURE__ */ React.createElement(MessageSquare, { size: 16 }), " General"), /* @__PURE__ */ React.createElement("button", { style: { ...S.tab, ...tab === "forum" ? S.tabActive : {} }, onClick: () => setTab("forum") }, /* @__PURE__ */ React.createElement(MapPin, { size: 16 }), " Forum")), tab === "general" ? /* @__PURE__ */ React.createElement(GeneralChat, { session, group, me, isAdmin, mutes, onToggleMute: toggleMute, onGroupChange: reloadGroup }) : /* @__PURE__ */ React.createElement(Forum, { session, group, me, isAdmin, mutes }), showInvite && /* @__PURE__ */ React.createElement(InviteModal, { group, session, onClose: () => setShowInvite(false), onChange: reloadGroup }), showAdmin && isAdmin && /* @__PURE__ */ React.createElement(AdminModal, { session, group, isOwner, onClose: () => setShowAdmin(false), onChange: reloadGroup, onDeleted: onLeave }), changingName && /* @__PURE__ */ React.createElement(ChangeNameModal, { session, group, me, onClose: () => setChangingName(false), onChanged: (g) => {
     setGroup(g);
   } }));
 }
@@ -350,6 +375,7 @@ function UsernamePicker({ session, group, onSet, onLeave }) {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const submit = async () => {
+    if (!name.trim() || busy) return;
     setBusy(true);
     setErr("");
     const r = await api.post("/api/group/claimname", { key: session.key, sessionId: session.sessionId, gid: group.id, username: name.trim() });
@@ -359,13 +385,14 @@ function UsernamePicker({ session, group, onSet, onLeave }) {
     if (r && r.error === "invalid") return setErr("Pick a name up to 24 characters.");
     setErr("Could not set username.");
   };
-  return /* @__PURE__ */ React.createElement("div", { style: S.center }, /* @__PURE__ */ React.createElement("div", { style: S.card, className: "reveal" }, /* @__PURE__ */ React.createElement("div", { style: S.brand }, "Pick your name"), /* @__PURE__ */ React.createElement("p", { style: S.sub }, "Choose a username for ", /* @__PURE__ */ React.createElement("b", null, group.name), ". Once taken, it's reserved for you and no one else can use it."), /* @__PURE__ */ React.createElement("label", { style: S.label }, "Username"), /* @__PURE__ */ React.createElement("input", { style: S.input, value: name, onChange: (e) => setName(e.target.value), placeholder: "e.g. jordan_m", maxLength: 24 }), err && /* @__PURE__ */ React.createElement("div", { style: S.error }, err), /* @__PURE__ */ React.createElement("button", { style: { ...S.primary, marginTop: 14, opacity: name.trim() ? 1 : 0.5 }, disabled: !name.trim() || busy, onClick: submit }, busy ? "Checking\u2026" : "Join community"), /* @__PURE__ */ React.createElement("button", { style: S.ghost, onClick: onLeave }, "Back")));
+  return /* @__PURE__ */ React.createElement("div", { style: S.center }, /* @__PURE__ */ React.createElement("div", { style: S.card, className: "reveal" }, /* @__PURE__ */ React.createElement("div", { style: S.brand }, "Pick your name"), /* @__PURE__ */ React.createElement("p", { style: S.sub }, "Choose a username for ", /* @__PURE__ */ React.createElement("b", null, group.name), ". Once taken, it's reserved for you and no one else can use it."), /* @__PURE__ */ React.createElement("label", { style: S.label }, "Username"), /* @__PURE__ */ React.createElement("input", { style: S.input, value: name, onChange: (e) => setName(e.target.value), onKeyDown: onEnter(submit), placeholder: "e.g. jordan_m", maxLength: 24 }), err && /* @__PURE__ */ React.createElement("div", { style: S.error }, err), /* @__PURE__ */ React.createElement("button", { style: { ...S.primary, marginTop: 14, opacity: name.trim() ? 1 : 0.5 }, disabled: !name.trim() || busy, onClick: submit }, busy ? "Checking\u2026" : "Join community"), /* @__PURE__ */ React.createElement("button", { style: S.ghost, onClick: onLeave }, "Back")));
 }
 function ChangeNameModal({ session, group, me, onClose, onChanged }) {
   const [name, setName] = useState(me.username || "");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const submit = async () => {
+    if (!name.trim() || busy) return;
     setBusy(true);
     setErr("");
     const r = await api.post("/api/group/claimname", { key: session.key, sessionId: session.sessionId, gid: group.id, username: name.trim() });
@@ -380,7 +407,7 @@ function ChangeNameModal({ session, group, me, onClose, onChanged }) {
     if (r && r.error === "invalid") return setErr("Pick a name up to 24 characters.");
     setErr("Could not change name.");
   };
-  return /* @__PURE__ */ React.createElement(Modal, { onClose, title: "Change username" }, /* @__PURE__ */ React.createElement("p", { style: S.muted }, "You can change your name once every 60 days. Everyone will see a note that your name changed. Your old name stays reserved to you."), /* @__PURE__ */ React.createElement("label", { style: { ...S.label, marginTop: 12 } }, "New username"), /* @__PURE__ */ React.createElement("input", { style: S.input, value: name, onChange: (e) => setName(e.target.value), maxLength: 24 }), err && /* @__PURE__ */ React.createElement("div", { style: S.error }, err), /* @__PURE__ */ React.createElement("button", { style: { ...S.primary, marginTop: 14, opacity: name.trim() ? 1 : 0.5 }, disabled: !name.trim() || busy, onClick: submit }, busy ? "Saving\u2026" : "Save"));
+  return /* @__PURE__ */ React.createElement(Modal, { onClose, title: "Change username" }, /* @__PURE__ */ React.createElement("p", { style: S.muted }, "You can change your name once every 60 days. Everyone will see a note that your name changed. Your old name stays reserved to you."), /* @__PURE__ */ React.createElement("label", { style: { ...S.label, marginTop: 12 } }, "New username"), /* @__PURE__ */ React.createElement("input", { style: S.input, value: name, onChange: (e) => setName(e.target.value), onKeyDown: onEnter(submit), maxLength: 24 }), err && /* @__PURE__ */ React.createElement("div", { style: S.error }, err), /* @__PURE__ */ React.createElement("button", { style: { ...S.primary, marginTop: 14, opacity: name.trim() ? 1 : 0.5 }, disabled: !name.trim() || busy, onClick: submit }, busy ? "Saving\u2026" : "Save"));
 }
 function useItems(prefix, ms = 2500) {
   const [items, setItems] = useState([]);
@@ -397,6 +424,20 @@ function useItems(prefix, ms = 2500) {
   return [items, load];
 }
 const excerptOf = (t) => String(t || "").replace(/\s+/g, " ").trim().slice(0, 90);
+const seenKey = (gid, meKey) => `cc_seen:${gid}:${meKey}`;
+const getSeen = (gid, meKey) => {
+  try {
+    return Number(localStorage.getItem(seenKey(gid, meKey))) || 0;
+  } catch {
+    return 0;
+  }
+};
+const markSeen = (gid, meKey, ts) => {
+  try {
+    localStorage.setItem(seenKey(gid, meKey), String(ts));
+  } catch {
+  }
+};
 function useMutes(gid, meKey) {
   const key = `cc_mutes:${gid}:${meKey}`;
   const [mutes, setMutes] = useState(() => {
@@ -447,6 +488,7 @@ function Composer({ me, onSend, placeholder }) {
   } }), /* @__PURE__ */ React.createElement("button", { style: S.sendBtn, onClick: send }, /* @__PURE__ */ React.createElement(Send, { size: 18 })));
 }
 const senderLabel = (m) => m.system ? null : m.anon ? anonLabel((m.author || "x") + (m.gid || "")) : m.authorName;
+const previewOf = (m, meKey) => m.system ? m.text : `${m.author === meKey ? "You" : senderLabel(m) || "member"}: ${excerptOf(m.text)}`;
 function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroupChange }) {
   const prefix = msgPrefix(group.id);
   const [items, reload] = useItems(prefix);
@@ -459,15 +501,48 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
   const [pinIdx, setPinIdx] = useState(0);
   const [highlight, setHighlight] = useState(null);
   const [jumpTo, setJumpTo] = useState(null);
+  const [anchor, setAnchor] = useState(null);
+  const [atBottom, setAtBottom] = useState(true);
   const endRef = useRef(null);
+  const feedRef = useRef(null);
+  const openedRef = useRef(false);
+  const [openSeen] = useState(() => getSeen(group.id, session.key) || me && me.joinedAt || 0);
   useEffect(() => {
-    endRef.current && endRef.current.scrollIntoView({ behavior: "smooth" });
+    if (!items.length) return;
+    if (!openedRef.current) {
+      openedRef.current = true;
+      const firstUnseen = items.find((m) => !m.system && m.author !== session.key && m.ts > openSeen);
+      markSeen(group.id, session.key, items[items.length - 1].ts);
+      if (firstUnseen) {
+        const el = document.getElementById("msg-" + firstUnseen.id);
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+        flash(firstUnseen.id);
+        setAnchor(firstUnseen.id);
+        setAtBottom(false);
+        return;
+      }
+    }
+    if (atBottom) endRef.current && endRef.current.scrollIntoView({ behavior: "smooth" });
   }, [items.length]);
+  const onFeedScroll = () => {
+    const el = feedRef.current;
+    if (el) setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 60);
+  };
+  const jumpToBottom = () => {
+    setAnchor(null);
+    setAtBottom(true);
+    endRef.current && endRef.current.scrollIntoView({ behavior: "smooth" });
+  };
+  const showDown = !!anchor || !atBottom;
   useEffect(() => {
     const close = () => setMenuFor(null);
     document.addEventListener("click", close);
     return () => document.removeEventListener("click", close);
   }, []);
+  const muteStamp = (mutes || []).join("|");
+  useEffect(() => {
+    setRevealed(/* @__PURE__ */ new Set());
+  }, [muteStamp]);
   const pins = group.pins || [];
   useEffect(() => {
     setPinIdx(0);
@@ -572,7 +647,7 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
     setResults(null);
     setQuery("");
     setJumpTo(r.id);
-  } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "baseline" } }, /* @__PURE__ */ React.createElement("span", { style: { color: SENDER, fontWeight: 600, fontSize: 13 } }, r.anon ? anonLabel(r.author + group.id) : r.authorName || "member"), /* @__PURE__ */ React.createElement("span", { style: S.time }, fmtTime(r.ts))), /* @__PURE__ */ React.createElement("div", { style: S.resultText }, r.text))), results && results.length === 0 && /* @__PURE__ */ React.createElement("div", { style: S.empty }, /* @__PURE__ */ React.createElement("p", { style: S.muted }, "No messages match \u201C", trimmed, "\u201D."))) : /* @__PURE__ */ React.createElement("div", { style: S.messages }, items.length === 0 && /* @__PURE__ */ React.createElement("div", { style: S.empty }, /* @__PURE__ */ React.createElement("p", { style: S.muted }, "Be the first to say hello \u{1F44B}")), items.map((m) => {
+  } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "baseline" } }, /* @__PURE__ */ React.createElement("span", { style: { color: SENDER, fontWeight: 600, fontSize: 13 } }, r.anon ? anonLabel(r.author + group.id) : r.authorName || "member"), /* @__PURE__ */ React.createElement("span", { style: S.time }, fmtTime(r.ts))), /* @__PURE__ */ React.createElement("div", { style: S.resultText }, r.text))), results && results.length === 0 && /* @__PURE__ */ React.createElement("div", { style: S.empty }, /* @__PURE__ */ React.createElement("p", { style: S.muted }, "No messages match \u201C", trimmed, "\u201D."))) : /* @__PURE__ */ React.createElement("div", { ref: feedRef, onScroll: onFeedScroll, "data-role": "feed", "data-unread-anchor": anchor || void 0, style: S.messages }, items.length === 0 && /* @__PURE__ */ React.createElement("div", { style: S.empty }, /* @__PURE__ */ React.createElement("p", { style: S.muted }, "Be the first to say hello \u{1F44B}")), items.map((m) => {
     if (m.system) return /* @__PURE__ */ React.createElement("div", { key: m.id, id: "msg-" + m.id, style: S.systemMsg, className: "reveal" }, m.text);
     const mine = m.author === session.key;
     const isMuted = mutedSet.has(m.author);
@@ -580,11 +655,11 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
     const pinned = pins.some((p) => p.key === m._key);
     if (isMuted && !inChain) return null;
     if (isMuted && !revealed.has(m._key)) {
-      return /* @__PURE__ */ React.createElement("div", { key: m.id, id: "msg-" + m.id, style: { ...S.bubbleRow, justifyContent: mine ? "flex-end" : "flex-start" }, className: "reveal" }, /* @__PURE__ */ React.createElement("div", { style: { ...S.bubble, ...mine ? S.bubbleMine : {}, ...S.mutedBubble, ...highlight === m.id ? S.bubbleFlash : {} } }, /* @__PURE__ */ React.createElement("div", { style: S.bubbleHead }, /* @__PURE__ */ React.createElement("span", { style: { color: MUTED, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 } }, /* @__PURE__ */ React.createElement(BellOff, { size: 11 }), " Muted message"), /* @__PURE__ */ React.createElement("span", { style: S.time }, fmtTime(m.ts)), /* @__PURE__ */ React.createElement("button", { style: S.showBtn, title: "Show this message", onClick: () => reveal(m._key) }, "Show")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: MUTED, fontStyle: "italic" } }, "Hidden because you muted this user.")));
+      return /* @__PURE__ */ React.createElement("div", { key: m.id, id: "msg-" + m.id, style: { ...S.bubbleRow, justifyContent: mine ? "flex-end" : "flex-start" }, className: "reveal" }, /* @__PURE__ */ React.createElement("div", { style: { ...S.bubble, ...mine ? S.bubbleMine : {}, ...S.mutedBubble, ...highlight === m.id ? S.bubbleFlash : {} } }, /* @__PURE__ */ React.createElement("div", { style: S.bubbleHead }, /* @__PURE__ */ React.createElement("span", { style: { color: MUTED, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 } }, /* @__PURE__ */ React.createElement(BellOff, { size: 11 }), " Muted message"), /* @__PURE__ */ React.createElement("button", { style: S.showBtn, title: "Show this message", onClick: () => reveal(m._key) }, "Show")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: MUTED, fontStyle: "italic" } }, "Hidden because you muted this user."), /* @__PURE__ */ React.createElement("div", { "data-role": "msg-stamp", style: S.stamp }, fmtStamp(m.ts))));
     }
     const root = rootOf(m);
     const hasThread = !!root && descendants(root._key).length > 0;
-    return /* @__PURE__ */ React.createElement("div", { key: m.id, id: "msg-" + m.id, style: { ...S.bubbleRow, justifyContent: mine ? "flex-end" : "flex-start", ...menuFor === m.id ? S.bubbleRowActive : {} }, className: "reveal" }, /* @__PURE__ */ React.createElement("div", { style: { ...S.bubble, ...mine ? S.bubbleMine : {}, ...highlight === m.id ? S.bubbleFlash : {} } }, /* @__PURE__ */ React.createElement("div", { style: S.bubbleHead }, /* @__PURE__ */ React.createElement("span", { style: { color: SENDER, fontWeight: 600 } }, m.anon && /* @__PURE__ */ React.createElement(EyeOff, { size: 11, style: { verticalAlign: -1, marginRight: 3 } }), senderLabel(m)), pinned && /* @__PURE__ */ React.createElement(Pin, { size: 11, style: { color: ACCENT, flexShrink: 0 } }), /* @__PURE__ */ React.createElement("span", { style: S.time }, fmtTime(m.ts)), /* @__PURE__ */ React.createElement("button", { style: S.miniDel, title: "Message options", onClick: (e) => {
+    return /* @__PURE__ */ React.createElement("div", { key: m.id, id: "msg-" + m.id, style: { ...S.bubbleRow, justifyContent: mine ? "flex-end" : "flex-start", ...menuFor === m.id ? S.bubbleRowActive : {} }, className: "reveal" }, /* @__PURE__ */ React.createElement("div", { style: { ...S.bubble, ...mine ? S.bubbleMine : {}, ...highlight === m.id ? S.bubbleFlash : {} } }, /* @__PURE__ */ React.createElement("div", { style: S.bubbleHead }, /* @__PURE__ */ React.createElement("span", { style: { color: SENDER, fontWeight: 600 } }, m.anon && /* @__PURE__ */ React.createElement(EyeOff, { size: 11, style: { verticalAlign: -1, marginRight: 3 } }), senderLabel(m)), pinned && /* @__PURE__ */ React.createElement(Pin, { size: 11, style: { color: ACCENT, flexShrink: 0 } }), /* @__PURE__ */ React.createElement("button", { style: S.miniDel, title: "Message options", onClick: (e) => {
       e.stopPropagation();
       setMenuFor((v) => v === m.id ? null : m.id);
     } }, /* @__PURE__ */ React.createElement(MoreVertical, { size: 14 }))), menuFor === m.id && /* @__PURE__ */ React.createElement(
@@ -602,8 +677,8 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
         onTogglePin: () => togglePin(m),
         onDelete: () => del(m)
       }
-    ), m.replyTo && /* @__PURE__ */ React.createElement(ReplyPreview, { replyTo: m.replyTo, byKey, mutedSet, revealed, onReveal: reveal }), /* @__PURE__ */ React.createElement("div", null, m.text)));
-  }), /* @__PURE__ */ React.createElement("div", { ref: endRef })), replyTo && /* @__PURE__ */ React.createElement("div", { style: S.replyBanner }, /* @__PURE__ */ React.createElement(CornerUpLeft, { size: 14, style: { flexShrink: 0, color: ACCENT } }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: S.replyBannerName }, "Replying to ", senderLabel(replyTo) || "message"), /* @__PURE__ */ React.createElement("div", { style: S.replyBannerText }, excerptOf(replyTo.text))), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Cancel reply", onClick: () => setReplyTo(null) }, /* @__PURE__ */ React.createElement(X, { size: 16 }))), /* @__PURE__ */ React.createElement(Composer, { me, onSend: send, placeholder: "Message the whole community\u2026" }), threadRoot && /* @__PURE__ */ React.createElement(ThreadModal, { root: threadRoot, items, byKey, me, onClose: () => setThreadRoot(null), onReply: (t, a) => postMessage(t, a, threadRoot) }));
+    ), m.replyTo && /* @__PURE__ */ React.createElement(ReplyPreview, { replyTo: m.replyTo, byKey, mutedSet, revealed, onReveal: reveal }), /* @__PURE__ */ React.createElement("div", null, m.text), /* @__PURE__ */ React.createElement("div", { "data-role": "msg-stamp", style: S.stamp }, fmtStamp(m.ts))));
+  }), /* @__PURE__ */ React.createElement("div", { ref: endRef })), showDown && /* @__PURE__ */ React.createElement("button", { "data-role": "scroll-down", title: "Jump to the newest messages", style: S.scrollDown, onClick: jumpToBottom }, /* @__PURE__ */ React.createElement(ChevronDown, { size: 20 })), replyTo && /* @__PURE__ */ React.createElement("div", { style: S.replyBanner }, /* @__PURE__ */ React.createElement(CornerUpLeft, { size: 14, style: { flexShrink: 0, color: ACCENT } }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: S.replyBannerName }, "Replying to ", senderLabel(replyTo) || "message"), /* @__PURE__ */ React.createElement("div", { style: S.replyBannerText }, excerptOf(replyTo.text))), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Cancel reply", onClick: () => setReplyTo(null) }, /* @__PURE__ */ React.createElement(X, { size: 16 }))), /* @__PURE__ */ React.createElement(Composer, { me, onSend: send, placeholder: "Message the whole community\u2026" }), threadRoot && /* @__PURE__ */ React.createElement(ThreadModal, { root: threadRoot, items, byKey, me, onClose: () => setThreadRoot(null), onReply: (t, a) => postMessage(t, a, threadRoot) }));
 }
 function MsgMenu({ mine, isAdmin, hasThread, muted, pinned, onClose, onReply, onThread, onToggleMute, onTogglePin, onDelete }) {
   const item = (icon, label, onClick, danger) => /* @__PURE__ */ React.createElement(
@@ -765,6 +840,12 @@ function fmtTime(ts) {
   const d = new Date(ts), n = /* @__PURE__ */ new Date();
   return d.toDateString() === n.toDateString() ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : d.toLocaleDateString([], { month: "short", day: "numeric" });
 }
+function fmtStamp(ts) {
+  const d = new Date(ts);
+  const date = d.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
+  const time = d.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" });
+  return `${date} \xB7 ${time} EST`;
+}
 const BG = "#0b0f14", PANEL = "#11171f", PANEL2 = "#161e28", LINE = "#1f2a36", TEXT = "#e8eef2", MUTED = "#7b8a96", ACCENT = "#2dd4bf", SENDER = "#9fc3d6";
 const S = {
   root: { fontFamily: "'Outfit', system-ui, sans-serif", background: BG, color: TEXT, height: "100vh", maxWidth: 480, margin: "0 auto", display: "flex", flexDirection: "column", position: "relative", overflow: "hidden" },
@@ -787,7 +868,7 @@ const S = {
   tab: { flex: 1, background: "transparent", border: "none", borderBottom: "2px solid transparent", color: MUTED, padding: "13px", cursor: "pointer", display: "flex", gap: 7, alignItems: "center", justifyContent: "center", fontWeight: 600, fontSize: 14 },
   tabActive: { color: ACCENT, borderBottomColor: ACCENT },
   scroll: { flex: 1, overflowY: "auto", padding: 14, display: "flex", flexDirection: "column", gap: 10 },
-  chatArea: { flex: 1, display: "flex", flexDirection: "column", minHeight: 0 },
+  chatArea: { position: "relative", flex: 1, display: "flex", flexDirection: "column", minHeight: 0 },
   messages: { flex: 1, overflowY: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 8 },
   searchBar: { display: "flex", alignItems: "center", gap: 8, padding: "9px 14px", borderBottom: `1px solid ${LINE}`, background: PANEL },
   searchInput: { flex: 1, background: PANEL2, border: `1px solid ${LINE}`, color: TEXT, borderRadius: 20, padding: "8px 14px", outline: "none", fontSize: 14, fontFamily: "inherit" },
@@ -803,6 +884,7 @@ const S = {
   bubbleMine: { background: "#123f38", border: "1px solid #1d5a50", borderBottomLeftRadius: 16, borderBottomRightRadius: 5 },
   bubbleHead: { display: "flex", alignItems: "center", gap: 8, marginBottom: 3, fontSize: 12 },
   time: { color: MUTED, fontSize: 11 },
+  stamp: { fontSize: 10, color: MUTED, textAlign: "right", marginTop: 3, letterSpacing: 0.2 },
   systemMsg: { alignSelf: "center", fontSize: 12, color: MUTED, background: PANEL2, borderRadius: 20, padding: "4px 12px", margin: "2px 0" },
   miniDel: { background: "transparent", border: "none", color: "#6b7a85", cursor: "pointer", padding: 2, display: "flex", marginLeft: "auto" },
   menu: { position: "absolute", top: 24, zIndex: 30, minWidth: 178, background: "#0f1620", border: `1px solid ${LINE}`, borderRadius: 12, padding: 4, boxShadow: "0 12px 32px rgba(0,0,0,.55)" },
@@ -845,6 +927,8 @@ const S = {
   replyZone: { marginTop: 10, borderTop: `1px solid ${LINE}`, paddingTop: 10, display: "flex", flexDirection: "column", gap: 8 },
   reply: { background: PANEL2, borderRadius: 10, padding: "7px 10px" },
   bottomBar: { display: "flex", gap: 10, padding: 14, borderTop: `1px solid ${LINE}`, background: PANEL },
+  badge: { background: ACCENT, color: "#04201d", fontWeight: 700, fontSize: 12, minWidth: 22, height: 22, padding: "0 7px", borderRadius: 11, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  scrollDown: { position: "absolute", right: 14, bottom: 78, zIndex: 35, width: 38, height: 38, borderRadius: "50%", background: PANEL, border: `1px solid ${LINE}`, color: ACCENT, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 6px 18px rgba(0,0,0,.45)" },
   groupCard: { display: "flex", alignItems: "center", gap: 12, background: PANEL, border: `1px solid ${LINE}`, borderRadius: 14, padding: 12, cursor: "pointer", color: TEXT },
   groupAvatar: { width: 40, height: 40, borderRadius: 12, background: "linear-gradient(135deg,#2dd4bf,#0e7490)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, color: "#04201d", flexShrink: 0 },
   empty: { textAlign: "center", padding: "40px 20px", color: MUTED, display: "flex", flexDirection: "column", alignItems: "center", gap: 8 },

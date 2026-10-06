@@ -2,7 +2,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 const {
   Users, MapPin, Shield, Send, Eye, EyeOff, Link2, QrCode, Search,
   X, Trash2, UserMinus, Crown, LogIn, Plus, Copy, Check, MessageSquare, ChevronLeft, Ban, Key, LogOut,
-  MoreVertical, CornerUpLeft, Bell, BellOff, Smile, Pin, PinOff
+  MoreVertical, CornerUpLeft, Bell, BellOff, Smile, Pin, PinOff, ChevronDown
 } = lucide;
 
 // ---------- API ----------
@@ -54,6 +54,8 @@ const now = () => Date.now();
 const groupKey = (id) => `group:${id}`;
 const msgPrefix = (g) => `msg:${g}:general:`;
 const postPrefix = (g) => `post:${g}:`;
+// Enter should fire a screen's primary button, the way submitting a form does.
+const onEnter = (fn) => (e) => { if (e.key === "Enter") { e.preventDefault(); fn(); } };
 
 const ANON_NAMES = ["Maple", "Cedar", "Willow", "Birch", "Aspen", "Sage", "Fern", "Heron", "Otter", "Robin", "Wren", "Lark"];
 const anonLabel = (seed) => { let h = 0; for (const c of String(seed)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return "Anon " + ANON_NAMES[h % ANON_NAMES.length] + " " + (h % 90 + 10); };
@@ -132,6 +134,7 @@ function Login({ onAuthed, kicked, clearKicked }) {
     else setErr("Could not create account.");
   };
   const login = async () => {
+    if (!keyInput.trim() || busy) return;
     setBusy(true); setErr("");
     const key = keyInput.toUpperCase().replace(/[^A-Z0-9]/g, "");
     const r = await api.post("/api/account/login", { key });
@@ -158,7 +161,7 @@ function Login({ onAuthed, kicked, clearKicked }) {
         {mode === "haveKey" && (
           <>
             <label style={S.label}>Login key</label>
-            <input style={{ ...S.input, fontFamily: "monospace", letterSpacing: 1 }} value={keyInput} onChange={(e) => setKeyInput(e.target.value)} placeholder="your 16-character key" />
+            <input style={{ ...S.input, fontFamily: "monospace", letterSpacing: 1 }} value={keyInput} onChange={(e) => setKeyInput(e.target.value)} onKeyDown={onEnter(login)} placeholder="your 16-character key" />
             {err && <div style={S.error}>{err}</div>}
             <button style={{ ...S.primary, marginTop: 14, opacity: keyInput.trim() ? 1 : .5 }} disabled={!keyInput.trim() || busy} onClick={login}>{busy ? "Checking…" : "Log in"}</button>
             <button style={S.ghost} onClick={() => { setMode("choose"); setErr(""); }}>Back</button>
@@ -186,19 +189,33 @@ function Home({ session, pendingInvite, clearInvite, onOpen, onLogout }) {
   const [creating, setCreating] = useState(false);
   const [joining, setJoining] = useState(false);
   const [newName, setNewName] = useState("");
+  const [inbox, setInbox] = useState({}); // gid -> { unread, preview }
 
   const refresh = useCallback(async () => {
     const all = await slistValues("group:");
     const gs = all.filter((g) => g && g.members && g.members[session.key] && !(g.banned || []).includes(session.key));
     gs.sort((a, b) => b.createdAt - a.createdAt);
     setGroups(gs);
+    // Telegram-style inbox: how many messages are waiting and the newest one.
+    const next = {};
+    await Promise.all(gs.map(async (g) => {
+      const msgs = await slistValues(msgPrefix(g.id));
+      msgs.sort((a, b) => a.ts - b.ts);
+      const member = g.members[session.key];
+      const seen = getSeen(g.id, session.key) || (member && member.joinedAt) || 0;
+      const unread = msgs.filter((m) => !m.system && m.author !== session.key && m.ts > seen).length;
+      const last = msgs.length ? msgs[msgs.length - 1] : null;
+      next[g.id] = { unread, preview: last ? previewOf(last, session.key) : "" };
+    }));
+    setInbox(next);
   }, [session.key]);
-  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => { refresh(); const t = setInterval(refresh, 4000); return () => clearInterval(t); }, [refresh]);
   useEffect(() => { if (pendingInvite) setJoining(true); }, [pendingInvite]);
 
   // Groups are created server-side so a client can't hand itself ownership.
   const createGroup = async () => {
     const name = newName.trim();
+    if (!name) return;
     const r = await api.post("/api/group/create", { key: session.key, sessionId: session.sessionId, name });
     if (!r || !r.ok) return;
     setCreating(false); setNewName(""); refresh(); onOpen(r.group);
@@ -214,14 +231,20 @@ function Home({ session, pendingInvite, clearInvite, onOpen, onLogout }) {
         {groups.length === 0 && <div style={S.empty} className="reveal"><Users size={34} style={{ opacity: .5 }} /><p>No communities yet.</p><p style={S.muted}>Create one or join with an invite.</p></div>}
         {groups.map((g) => {
           const me = g.members[session.key];
+          const info = inbox[g.id] || {};
           return (
-            <button key={g.id} style={S.groupCard} className="reveal" onClick={() => onOpen(g)}>
+            <button key={g.id} data-role="group-card" style={S.groupCard} className="reveal" onClick={() => onOpen(g)}>
               <div style={S.groupAvatar}>{g.name.slice(0, 1).toUpperCase()}</div>
-              <div style={{ flex: 1, textAlign: "left" }}>
-                <div style={{ fontWeight: 600 }}>{g.name}</div>
-                <div style={S.muted}>{Object.keys(g.members).length} member(s){me && me.username ? " · " + me.username : " · pick a name"}</div>
+              <div style={{ flex: 1, minWidth: 0, textAlign: "left" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontWeight: 600 }}>{g.name}</span>
+                  {g.ownerKey === session.key ? <Crown size={14} color="#fbbf24" /> : (g.admins || []).includes(session.key) ? <Shield size={13} color="#7dd3fc" /> : null}
+                </div>
+                <div style={{ ...S.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {info.preview || `${Object.keys(g.members).length} member(s)${me && me.username ? " · " + me.username : " · pick a name"}`}
+                </div>
               </div>
-              {g.ownerKey === session.key ? <Crown size={16} color="#fbbf24" /> : (g.admins || []).includes(session.key) ? <Shield size={15} color="#7dd3fc" /> : null}
+              {info.unread > 0 && <span data-role="unread-badge" style={S.badge}>{info.unread > 99 ? "99+" : info.unread}</span>}
             </button>
           );
         })}
@@ -233,7 +256,7 @@ function Home({ session, pendingInvite, clearInvite, onOpen, onLogout }) {
 
       {creating && <Modal onClose={() => setCreating(false)} title="Create community">
         <label style={S.label}>Community name</label>
-        <input style={S.input} value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Oak Street Neighbors" maxLength={40} />
+        <input style={S.input} value={newName} onChange={(e) => setNewName(e.target.value)} onKeyDown={onEnter(createGroup)} placeholder="Oak Street Neighbors" maxLength={40} />
         <button style={{ ...S.primary, marginTop: 16, opacity: newName.trim() ? 1 : .5 }} disabled={!newName.trim()} onClick={createGroup}>Create</button>
       </Modal>}
       {joining && <JoinModal session={session} prefill={pendingInvite} onClose={() => { setJoining(false); clearInvite(); }} onJoined={(g) => { setJoining(false); clearInvite(); refresh(); onOpen(g); }} />}
@@ -245,8 +268,9 @@ function JoinModal({ session, prefill, onClose, onJoined }) {
   const [code, setCode] = useState(prefill || "");
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
   const doJoin = async () => {
-    setBusy(true); setErr("");
     const raw = code.trim();
+    if (!raw || busy) return;
+    setBusy(true); setErr("");
     const r = await api.post("/api/group/join", { key: session.key, sessionId: session.sessionId, code: raw });
     setBusy(false);
     if (r && r.ok) return onJoined(r.group);
@@ -256,7 +280,7 @@ function JoinModal({ session, prefill, onClose, onJoined }) {
   };
   return <Modal onClose={onClose} title="Join community">
     <label style={S.label}>Invite code or link</label>
-    <input style={S.input} value={code} onChange={(e) => { const v = e.target.value; const m = v.match(/join=([A-Za-z0-9_-]+)/); setCode(m ? m[1] : v); }} placeholder="paste invite link or code" />
+    <input style={S.input} value={code} onChange={(e) => { const v = e.target.value; const m = v.match(/join=([A-Za-z0-9_-]+)/); setCode(m ? m[1] : v); }} onKeyDown={onEnter(doJoin)} placeholder="paste invite link or code" />
     {err && <div style={S.error}>{err}</div>}
     <button style={{ ...S.primary, marginTop: 16, opacity: code.trim() ? 1 : .5 }} disabled={!code.trim() || busy} onClick={doJoin}>{busy ? "Joining…" : "Join community"}</button>
   </Modal>;
@@ -286,10 +310,10 @@ function GroupApp({ session, group, setGroup, tab, setTab, onLeave, onLogout }) 
   return (
     <div style={S.screen}>
       <div style={S.appHeader}>
-        <button style={S.iconBtn} onClick={onLeave}><ChevronLeft size={20} /></button>
+        <button style={S.iconBtn} title="Back to your communities" onClick={onLeave}><ChevronLeft size={20} /></button>
         <div style={{ flex: 1 }}>
           <div style={{ fontWeight: 700 }}>{group.name}</div>
-          <button style={S.nameBtn} onClick={() => setChangingName(true)}>{me.username}{isOwner ? " · owner" : isAdmin ? " · admin" : ""} ✎</button>
+          <button style={S.nameBtn} title="Change your username" onClick={() => setChangingName(true)}>{me.username}{isOwner ? " · owner" : isAdmin ? " · admin" : ""} ✎</button>
         </div>
         <button style={S.iconBtn} title="Invite people" onClick={() => setShowInvite(true)}><QrCode size={18} /></button>
         {isAdmin && <button style={S.iconBtn} title="Manage members" onClick={() => setShowAdmin(true)}><Shield size={18} /></button>}
@@ -314,6 +338,7 @@ function UsernamePicker({ session, group, onSet, onLeave }) {
   const [name, setName] = useState("");
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
   const submit = async () => {
+    if (!name.trim() || busy) return;
     setBusy(true); setErr("");
     const r = await api.post("/api/group/claimname", { key: session.key, sessionId: session.sessionId, gid: group.id, username: name.trim() });
     setBusy(false);
@@ -327,7 +352,7 @@ function UsernamePicker({ session, group, onSet, onLeave }) {
       <div style={S.brand}>Pick your name</div>
       <p style={S.sub}>Choose a username for <b>{group.name}</b>. Once taken, it's reserved for you and no one else can use it.</p>
       <label style={S.label}>Username</label>
-      <input style={S.input} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. jordan_m" maxLength={24} />
+      <input style={S.input} value={name} onChange={(e) => setName(e.target.value)} onKeyDown={onEnter(submit)} placeholder="e.g. jordan_m" maxLength={24} />
       {err && <div style={S.error}>{err}</div>}
       <button style={{ ...S.primary, marginTop: 14, opacity: name.trim() ? 1 : .5 }} disabled={!name.trim() || busy} onClick={submit}>{busy ? "Checking…" : "Join community"}</button>
       <button style={S.ghost} onClick={onLeave}>Back</button>
@@ -340,6 +365,7 @@ function ChangeNameModal({ session, group, me, onClose, onChanged }) {
   const [name, setName] = useState(me.username || "");
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
   const submit = async () => {
+    if (!name.trim() || busy) return;
     setBusy(true); setErr("");
     // The rename notice is written server-side, so it can't be forged or skipped.
     const r = await api.post("/api/group/claimname", { key: session.key, sessionId: session.sessionId, gid: group.id, username: name.trim() });
@@ -353,7 +379,7 @@ function ChangeNameModal({ session, group, me, onClose, onChanged }) {
   return <Modal onClose={onClose} title="Change username">
     <p style={S.muted}>You can change your name once every 60 days. Everyone will see a note that your name changed. Your old name stays reserved to you.</p>
     <label style={{ ...S.label, marginTop: 12 }}>New username</label>
-    <input style={S.input} value={name} onChange={(e) => setName(e.target.value)} maxLength={24} />
+    <input style={S.input} value={name} onChange={(e) => setName(e.target.value)} onKeyDown={onEnter(submit)} maxLength={24} />
     {err && <div style={S.error}>{err}</div>}
     <button style={{ ...S.primary, marginTop: 14, opacity: name.trim() ? 1 : .5 }} disabled={!name.trim() || busy} onClick={submit}>{busy ? "Saving…" : "Save"}</button>
   </Modal>;
@@ -372,6 +398,13 @@ function useItems(prefix, ms = 2500) {
 
 // One-line preview text for reply chains (Telegram-style).
 const excerptOf = (t) => String(t || "").replace(/\s+/g, " ").trim().slice(0, 90);
+
+// Read marks are per viewer, per community, and live only in this browser — the
+// same trade-off as mutes. A missing mark falls back to when the viewer joined,
+// so history from before they arrived is never counted as unread.
+const seenKey = (gid, meKey) => `cc_seen:${gid}:${meKey}`;
+const getSeen = (gid, meKey) => { try { return Number(localStorage.getItem(seenKey(gid, meKey))) || 0; } catch { return 0; } };
+const markSeen = (gid, meKey, ts) => { try { localStorage.setItem(seenKey(gid, meKey), String(ts)); } catch {} };
 
 // Mutes are per viewer, per community, and live only in this browser.
 function useMutes(gid, meKey) {
@@ -414,6 +447,8 @@ function Composer({ me, onSend, placeholder }) {
 }
 
 const senderLabel = (m) => m.system ? null : (m.anon ? anonLabel((m.author || "x") + (m.gid || "")) : m.authorName);
+// Telegram-style "who: what" line for a community card's newest message.
+const previewOf = (m, meKey) => m.system ? m.text : `${m.author === meKey ? "You" : (senderLabel(m) || "member")}: ${excerptOf(m.text)}`;
 
 function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroupChange }) {
   const prefix = msgPrefix(group.id);
@@ -427,14 +462,49 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
   const [pinIdx, setPinIdx] = useState(0);
   const [highlight, setHighlight] = useState(null);
   const [jumpTo, setJumpTo] = useState(null);
+  const [anchor, setAnchor] = useState(null); // the first unseen message this visit opened on
+  const [atBottom, setAtBottom] = useState(true);
   const endRef = useRef(null);
-  useEffect(() => { endRef.current && endRef.current.scrollIntoView({ behavior: "smooth" }); }, [items.length]);
+  const feedRef = useRef(null);
+  const openedRef = useRef(false);
+  // Freeze the read mark for the visit: the room opens on the first message the
+  // viewer hasn't seen, and only then does the mark narrow to the newest one.
+  const [openSeen] = useState(() => getSeen(group.id, session.key) || (me && me.joinedAt) || 0);
+  // Opening the room lands on the first unseen message (Telegram-style), so the
+  // reader can scroll down through what they missed. After that, new messages
+  // only follow the view when the reader is already at the bottom.
+  useEffect(() => {
+    if (!items.length) return;
+    if (!openedRef.current) {
+      openedRef.current = true;
+      const firstUnseen = items.find((m) => !m.system && m.author !== session.key && m.ts > openSeen);
+      markSeen(group.id, session.key, items[items.length - 1].ts);
+      if (firstUnseen) {
+        const el = document.getElementById("msg-" + firstUnseen.id);
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+        flash(firstUnseen.id);
+        setAnchor(firstUnseen.id);
+        setAtBottom(false);
+        return;
+      }
+    }
+    if (atBottom) endRef.current && endRef.current.scrollIntoView({ behavior: "smooth" });
+  }, [items.length]);
+  const onFeedScroll = () => { const el = feedRef.current; if (el) setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 60); };
+  const jumpToBottom = () => { setAnchor(null); setAtBottom(true); endRef.current && endRef.current.scrollIntoView({ behavior: "smooth" }); };
+  const showDown = !!anchor || !atBottom;
   // A click anywhere outside an open message menu dismisses it.
   useEffect(() => {
     const close = () => setMenuFor(null);
     document.addEventListener("click", close);
     return () => document.removeEventListener("click", close);
   }, []);
+  // A reveal only bypasses the mute that was active when the reader tapped it.
+  // Without this, unmuting and muting the same person again leaves a stale
+  // reveal behind, so the re-muted messages (and their reply previews) still
+  // look visible — the whole point of muting stops working.
+  const muteStamp = (mutes || []).join("|");
+  useEffect(() => { setRevealed(new Set()); }, [muteStamp]);
 
   const pins = group.pins || [];
   useEffect(() => { setPinIdx(0); }, [pins.length]);
@@ -510,7 +580,7 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
         <div style={S.resultText}>{r.text}</div>
       </button>)}
       {results && results.length === 0 && <div style={S.empty}><p style={S.muted}>No messages match “{trimmed}”.</p></div>}
-    </div> : <div style={S.messages}>
+    </div> : <div ref={feedRef} onScroll={onFeedScroll} data-role="feed" data-unread-anchor={anchor || undefined} style={S.messages}>
       {items.length === 0 && <div style={S.empty}><p style={S.muted}>Be the first to say hello 👋</p></div>}
       {items.map((m) => {
         if (m.system) return <div key={m.id} id={"msg-" + m.id} style={S.systemMsg} className="reveal">{m.text}</div>;
@@ -527,10 +597,10 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
             <div style={{ ...S.bubble, ...(mine ? S.bubbleMine : {}), ...S.mutedBubble, ...(highlight === m.id ? S.bubbleFlash : {}) }}>
               <div style={S.bubbleHead}>
                 <span style={{ color: MUTED, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 }}><BellOff size={11} /> Muted message</span>
-                <span style={S.time}>{fmtTime(m.ts)}</span>
                 <button style={S.showBtn} title="Show this message" onClick={() => reveal(m._key)}>Show</button>
               </div>
               <div style={{ fontSize: 13, color: MUTED, fontStyle: "italic" }}>Hidden because you muted this user.</div>
+              <div data-role="msg-stamp" style={S.stamp}>{fmtStamp(m.ts)}</div>
             </div>
           </div>;
         }
@@ -541,7 +611,6 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
             <div style={S.bubbleHead}>
               <span style={{ color: SENDER, fontWeight: 600 }}>{m.anon && <EyeOff size={11} style={{ verticalAlign: -1, marginRight: 3 }} />}{senderLabel(m)}</span>
               {pinned && <Pin size={11} style={{ color: ACCENT, flexShrink: 0 }} />}
-              <span style={S.time}>{fmtTime(m.ts)}</span>
               <button style={S.miniDel} title="Message options" onClick={(e) => { e.stopPropagation(); setMenuFor((v) => (v === m.id ? null : m.id)); }}><MoreVertical size={14} /></button>
             </div>
             {menuFor === m.id && <MsgMenu mine={mine} isAdmin={isAdmin} hasThread={hasThread} muted={isMuted} pinned={pinned}
@@ -549,11 +618,13 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
               onToggleMute={() => onToggleMute(m.author)} onTogglePin={() => togglePin(m)} onDelete={() => del(m)} />}
             {m.replyTo && <ReplyPreview replyTo={m.replyTo} byKey={byKey} mutedSet={mutedSet} revealed={revealed} onReveal={reveal} />}
             <div>{m.text}</div>
+            <div data-role="msg-stamp" style={S.stamp}>{fmtStamp(m.ts)}</div>
           </div>
         </div>;
       })}
       <div ref={endRef} />
     </div>}
+    {showDown && <button data-role="scroll-down" title="Jump to the newest messages" style={S.scrollDown} onClick={jumpToBottom}><ChevronDown size={20} /></button>}
     {replyTo && <div style={S.replyBanner}>
       <CornerUpLeft size={14} style={{ flexShrink: 0, color: ACCENT }} />
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -808,6 +879,15 @@ function Modal({ title, children, onClose }) {
   </div></div>;
 }
 function fmtTime(ts) { const d = new Date(ts), n = new Date(); return d.toDateString() === n.toDateString() ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : d.toLocaleDateString([], { month: "short", day: "numeric" }); }
+// Every bubble carries its date and time in Eastern time, tucked into the
+// bottom-right corner (Telegram-style). "EST" is the label the user asked for
+// even while the zone is on daylight time.
+function fmtStamp(ts) {
+  const d = new Date(ts);
+  const date = d.toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
+  const time = d.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" });
+  return `${date} · ${time} EST`;
+}
 
 const BG = "#0b0f14", PANEL = "#11171f", PANEL2 = "#161e28", LINE = "#1f2a36", TEXT = "#e8eef2", MUTED = "#7b8a96", ACCENT = "#2dd4bf", SENDER = "#9fc3d6";
 const S = {
@@ -831,7 +911,7 @@ const S = {
   tab: { flex: 1, background: "transparent", border: "none", borderBottom: "2px solid transparent", color: MUTED, padding: "13px", cursor: "pointer", display: "flex", gap: 7, alignItems: "center", justifyContent: "center", fontWeight: 600, fontSize: 14 },
   tabActive: { color: ACCENT, borderBottomColor: ACCENT },
   scroll: { flex: 1, overflowY: "auto", padding: 14, display: "flex", flexDirection: "column", gap: 10 },
-  chatArea: { flex: 1, display: "flex", flexDirection: "column", minHeight: 0 },
+  chatArea: { position: "relative", flex: 1, display: "flex", flexDirection: "column", minHeight: 0 },
   messages: { flex: 1, overflowY: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 8 },
   searchBar: { display: "flex", alignItems: "center", gap: 8, padding: "9px 14px", borderBottom: `1px solid ${LINE}`, background: PANEL },
   searchInput: { flex: 1, background: PANEL2, border: `1px solid ${LINE}`, color: TEXT, borderRadius: 20, padding: "8px 14px", outline: "none", fontSize: 14, fontFamily: "inherit" },
@@ -847,6 +927,7 @@ const S = {
   bubbleMine: { background: "#123f38", border: "1px solid #1d5a50", borderBottomLeftRadius: 16, borderBottomRightRadius: 5 },
   bubbleHead: { display: "flex", alignItems: "center", gap: 8, marginBottom: 3, fontSize: 12 },
   time: { color: MUTED, fontSize: 11 },
+  stamp: { fontSize: 10, color: MUTED, textAlign: "right", marginTop: 3, letterSpacing: .2 },
   systemMsg: { alignSelf: "center", fontSize: 12, color: MUTED, background: PANEL2, borderRadius: 20, padding: "4px 12px", margin: "2px 0" },
   miniDel: { background: "transparent", border: "none", color: "#6b7a85", cursor: "pointer", padding: 2, display: "flex", marginLeft: "auto" },
   menu: { position: "absolute", top: 24, zIndex: 30, minWidth: 178, background: "#0f1620", border: `1px solid ${LINE}`, borderRadius: 12, padding: 4, boxShadow: "0 12px 32px rgba(0,0,0,.55)" },
@@ -889,6 +970,8 @@ const S = {
   replyZone: { marginTop: 10, borderTop: `1px solid ${LINE}`, paddingTop: 10, display: "flex", flexDirection: "column", gap: 8 },
   reply: { background: PANEL2, borderRadius: 10, padding: "7px 10px" },
   bottomBar: { display: "flex", gap: 10, padding: 14, borderTop: `1px solid ${LINE}`, background: PANEL },
+  badge: { background: ACCENT, color: "#04201d", fontWeight: 700, fontSize: 12, minWidth: 22, height: 22, padding: "0 7px", borderRadius: 11, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  scrollDown: { position: "absolute", right: 14, bottom: 78, zIndex: 35, width: 38, height: 38, borderRadius: "50%", background: PANEL, border: `1px solid ${LINE}`, color: ACCENT, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 6px 18px rgba(0,0,0,.45)" },
   groupCard: { display: "flex", alignItems: "center", gap: 12, background: PANEL, border: `1px solid ${LINE}`, borderRadius: 14, padding: 12, cursor: "pointer", color: TEXT },
   groupAvatar: { width: 40, height: 40, borderRadius: 12, background: "linear-gradient(135deg,#2dd4bf,#0e7490)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, color: "#04201d", flexShrink: 0 },
   empty: { textAlign: "center", padding: "40px 20px", color: MUTED, display: "flex", flexDirection: "column", alignItems: "center", gap: 8 },
