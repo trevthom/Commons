@@ -26,18 +26,64 @@ const postDelete = (s, gid, postKey) => api.post("/api/post/delete", auth(s, { g
 const postReply = (s, gid, postKey, text, anon) => api.post("/api/post/reply", auth(s, { gid, postKey, text, anon }));
 const postDeleteReply = (s, gid, postKey, replyId) => api.post("/api/post/deleteReply", auth(s, { gid, postKey, replyId }));
 const setPin = (s, gid, msgKey, on) => api.post(on ? "/api/group/pin" : "/api/group/unpin", auth(s, { gid, msgKey }));
-// Batch read: fetch every value under a prefix in a single request.
-const slistValues = async (prefix) => {
-  const j = await api.get("/api/mget?prefix=" + encodeURIComponent(prefix));
+// Batch read: fetch every value under a prefix in a single request. Passing
+// `since` (the newest timestamp we already hold) fetches only what is newer —
+// the polling path, which normally transfers nothing instead of the history.
+const slistValues = async (prefix, since) => {
+  const j = await api.get("/api/mget?prefix=" + encodeURIComponent(prefix) + (since ? "&since=" + since : ""));
   if (!j || !j.items) return [];
   return j.items.map(([k, v]) => ({ ...v, _key: k }));
 };
 
-// ---------- session storage (cleared when browser/tab closes) ----------
+// ---------- shared room cache ----------
+// One in-memory copy of each room's history, shared by the community list
+// (previews + unread counts) and the room itself. Opening a room therefore
+// paints instantly from what the list already polled; polls then ask the
+// server only for messages newer than the newest one held, and a full refresh
+// runs occasionally (and after every mutation) so deletions and edits land.
+const roomCache = new Map();   // prefix -> sorted items
+const roomFullAt = new Map();  // prefix -> when the cache was last fully fetched
+const ROOM_FULL_MS = 20000;
+// Cheap identity of a list: two lists with the same shape hold the same
+// messages, so a poll that changed nothing must not re-render the room.
+const sigOf = (list) => (list && list.length ? list.length + ":" + list[0]._key + ":" + list[list.length - 1]._key : "0");
+const mergeItems = (base, delta) => {
+  const byKey = new Map(base.map((m) => [m._key, m]));
+  for (const m of delta) byKey.set(m._key, m);
+  return [...byKey.values()].sort((a, b) => a.ts - b.ts);
+};
+async function syncRoom(prefix, forceFull) {
+  const cached = roomCache.get(prefix) || [];
+  const full = forceFull || !cached.length || Date.now() - (roomFullAt.get(prefix) || 0) > ROOM_FULL_MS;
+  const fetched = await slistValues(prefix, full ? 0 : cached[cached.length - 1].ts);
+  const next = (full ? fetched : mergeItems(cached, fetched)).sort((a, b) => a.ts - b.ts);
+  roomCache.set(prefix, next);
+  if (full) roomFullAt.set(prefix, Date.now());
+  return next;
+}
+
+// ---------- session storage ----------
+// The session lives in localStorage so an installed PWA (or a closed tab)
+// opens straight back into the same account, and every tab shares one session.
+// Only "Log out" clears it — or the session poll, when the account signs in
+// somewhere else and the server rotates the session id.
 const SK = "cc_session_v2";
-const loadSession = () => { try { return JSON.parse(sessionStorage.getItem(SK)) || null; } catch { return null; } };
-const saveSession = (s) => { try { sessionStorage.setItem(SK, JSON.stringify(s)); } catch {} };
-const clearSession = () => { try { sessionStorage.removeItem(SK); } catch {} };
+const readSession = (store) => { try { return JSON.parse(store.getItem(SK)) || null; } catch { return null; } };
+const loadSession = () => {
+  try {
+    const local = readSession(localStorage);
+    if (local) return local;
+    // Migrate a tab-scoped session left behind by an older build.
+    const tab = readSession(sessionStorage);
+    if (tab) { localStorage.setItem(SK, JSON.stringify(tab)); sessionStorage.removeItem(SK); return tab; }
+  } catch {}
+  return null;
+};
+const saveSession = (s) => {
+  const v = JSON.stringify(s);
+  try { localStorage.setItem(SK, v); } catch { try { sessionStorage.setItem(SK, v); } catch {} }
+};
+const clearSession = () => { try { localStorage.removeItem(SK); } catch {} try { sessionStorage.removeItem(SK); } catch {} };
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 // clipboard with fallback for non-HTTPS origins (http://192.168.x.x etc.)
@@ -77,8 +123,10 @@ function QRCodeView({ text, size = 200 }) {
 
 // ============================================================
 function CommunityChat() {
-  const [session, setSession] = useState(loadSession());
-  const [view, setView] = useState("loading"); // loading | login | home | app
+  // The stored session picks the first screen, so a returning user (including
+  // an installed PWA that was closed) never sees a loading or login flash.
+  const [session, setSession] = useState(loadSession);
+  const [view, setView] = useState(() => (session ? "home" : "login")); // login | home | app
   const [group, setGroup] = useState(null);
   const [tab, setTab] = useState("general");
   const [pendingInvite, setPendingInvite] = useState(null);
@@ -89,26 +137,34 @@ function CommunityChat() {
   useEffect(() => {
     const m = (window.location.hash || "").match(/join=([A-Za-z0-9_-]+)/);
     if (m) setPendingInvite(m[1]);
-    const s = loadSession();
-    setView(s ? "home" : "login");
   }, []);
 
-  // poll: if our session was invalidated (logged in elsewhere) -> force logout
+  // poll: if our session was invalidated (the account signed in elsewhere),
+  // follow the newer session another tab of this browser saved, else log out.
   useEffect(() => {
     if (!session) return;
     let stop = false;
     const check = async () => {
       const r = await api.get(`/api/account/session?key=${encodeURIComponent(session.key)}&sessionId=${encodeURIComponent(session.sessionId)}`);
-      if (!stop && r && r.valid === false) { setKicked(true); setSess(null); setGroup(null); setView("login"); }
+      if (stop || !r || r.valid !== false) return;
+      const stored = loadSession();
+      if (stored && stored.key === session.key && stored.sessionId !== session.sessionId) return setSess(stored);
+      setKicked(true); setSess(null); setGroup(null); setView("login");
     };
     const t = setInterval(check, 4000); check();
     return () => { stop = true; clearInterval(t); };
   }, [session]);
 
+  // The session is shared across tabs, so logging out in one logs the rest out.
+  useEffect(() => {
+    const onStorage = (e) => { if (e.key === SK && !loadSession()) { setSess(null); setGroup(null); setView("login"); } };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
   return (
     <div style={S.root}>
       <style>{CSS}</style>
-      {view === "loading" && <div style={S.center}><div className="pulse" style={{ fontSize: 40 }}>◇</div></div>}
       {view === "login" && <Login kicked={kicked} clearKicked={() => setKicked(false)} onAuthed={(s) => { setSess(s); setView("home"); }} />}
       {view === "home" && session && <Home session={session} pendingInvite={pendingInvite} clearInvite={() => setPendingInvite(null)} onOpen={(g) => { setGroup(g); setTab("general"); setView("app"); }} onLogout={() => { setSess(null); setView("login"); }} />}
       {view === "app" && group && session && <GroupApp session={session} group={group} setGroup={setGroup} tab={tab} setTab={setTab} onLeave={() => { setGroup(null); setView("home"); }} onLogout={() => { setSess(null); setGroup(null); setView("login"); }} />}
@@ -190,24 +246,30 @@ function Home({ session, pendingInvite, clearInvite, onOpen, onLogout }) {
   const [joining, setJoining] = useState(false);
   const [newName, setNewName] = useState("");
   const [inbox, setInbox] = useState({}); // gid -> { unread, preview }
+  const groupsSig = useRef("");
+  const inboxSig = useRef("");
 
   const refresh = useCallback(async () => {
     const all = await slistValues("group:");
     const gs = all.filter((g) => g && g.members && g.members[session.key] && !(g.banned || []).includes(session.key));
     gs.sort((a, b) => b.createdAt - a.createdAt);
-    setGroups(gs);
+    // Skip the state write (and the re-render) while nothing has changed.
+    const gsig = JSON.stringify(gs);
+    if (gsig !== groupsSig.current) { groupsSig.current = gsig; setGroups(gs); }
     // Telegram-style inbox: how many messages are waiting and the newest one.
+    // Reading each room goes through the shared cache, so this poll is also
+    // what makes opening a room instant — its history is already in memory.
     const next = {};
     await Promise.all(gs.map(async (g) => {
-      const msgs = await slistValues(msgPrefix(g.id));
-      msgs.sort((a, b) => a.ts - b.ts);
+      const msgs = await syncRoom(msgPrefix(g.id));
       const member = g.members[session.key];
       const seen = getSeen(g.id, session.key) || (member && member.joinedAt) || 0;
       const unread = msgs.filter((m) => !m.system && m.author !== session.key && m.ts > seen).length;
       const last = msgs.length ? msgs[msgs.length - 1] : null;
       next[g.id] = { unread, preview: last ? previewOf(last, session.key) : "" };
     }));
-    setInbox(next);
+    const isig = JSON.stringify(next);
+    if (isig !== inboxSig.current) { inboxSig.current = isig; setInbox(next); }
   }, [session.key]);
   useEffect(() => { refresh(); const t = setInterval(refresh, 4000); return () => clearInterval(t); }, [refresh]);
   useEffect(() => { if (pendingInvite) setJoining(true); }, [pendingInvite]);
@@ -230,18 +292,14 @@ function Home({ session, pendingInvite, clearInvite, onOpen, onLogout }) {
       <div style={S.scroll}>
         {groups.length === 0 && <div style={S.empty} className="reveal"><Users size={34} style={{ opacity: .5 }} /><p>No communities yet.</p><p style={S.muted}>Create one or join with an invite.</p></div>}
         {groups.map((g) => {
-          const me = g.members[session.key];
           const info = inbox[g.id] || {};
           return (
             <button key={g.id} data-role="group-card" style={S.groupCard} className="reveal" onClick={() => onOpen(g)}>
               <div style={S.groupAvatar}>{g.name.slice(0, 1).toUpperCase()}</div>
               <div style={{ flex: 1, minWidth: 0, textAlign: "left" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <span style={{ fontWeight: 600 }}>{g.name}</span>
-                  {g.ownerKey === session.key ? <Crown size={14} color="#fbbf24" /> : (g.admins || []).includes(session.key) ? <Shield size={13} color="#7dd3fc" /> : null}
-                </div>
+                <div style={{ fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{g.name}</div>
                 <div style={{ ...S.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {info.preview || `${Object.keys(g.members).length} member(s)${me && me.username ? " · " + me.username : " · pick a name"}`}
+                  {info.preview || "No messages yet"}
                 </div>
               </div>
               {info.unread > 0 && <span data-role="unread-badge" style={S.badge}>{info.unread > 99 ? "99+" : info.unread}</span>}
@@ -294,14 +352,19 @@ function GroupApp({ session, group, setGroup, tab, setTab, onLeave, onLogout }) 
   const me = group.members[session.key];
   const isOwner = group.ownerKey === session.key;
   const isAdmin = isOwner || (group.admins || []).includes(session.key);
+  const memberCount = Object.keys(group.members).length;
   const needsName = !me || !me.username;
   const [mutes, toggleMute] = useMutes(group.id, session.key);
+  const lastGroup = useRef("");
 
   const reloadGroup = useCallback(async () => {
     const g = await sget(groupKey(group.id));
     if (!g) return;
     if (!g.members[session.key] || (g.banned || []).includes(session.key)) { onLeave(); return; } // removed/banned elsewhere
-    setGroup(g);
+    // Only touch state when the document really changed: a fresh object every
+    // 3s would re-render the whole room (every bubble) for nothing.
+    const sig = JSON.stringify(g);
+    if (sig !== lastGroup.current) { lastGroup.current = sig; setGroup(g); }
   }, [group.id, session.key, setGroup, onLeave]);
   useEffect(() => { const t = setInterval(reloadGroup, 3000); return () => clearInterval(t); }, [reloadGroup]);
 
@@ -311,9 +374,10 @@ function GroupApp({ session, group, setGroup, tab, setTab, onLeave, onLogout }) 
     <div style={S.screen}>
       <div style={S.appHeader}>
         <button style={S.iconBtn} title="Back to your communities" onClick={onLeave}><ChevronLeft size={20} /></button>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontWeight: 700 }}>{group.name}</div>
-          <button style={S.nameBtn} title="Change your username" onClick={() => setChangingName(true)}>{me.username}{isOwner ? " · owner" : isAdmin ? " · admin" : ""} ✎</button>
+        <div style={{ flex: 1, minWidth: 0, textAlign: "center", lineHeight: 1.25 }}>
+          <div style={{ fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{group.name}</div>
+          <div data-role="member-count" style={{ ...S.muted, fontSize: 12 }}>{memberCount} member{memberCount === 1 ? "" : "s"}</div>
+          <button style={{ ...S.nameBtn, textAlign: "center", maxWidth: "100%", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title="Change your username" onClick={() => setChangingName(true)}>{me.username} ✎{isOwner ? " · owner" : isAdmin ? " · admin" : ""}</button>
         </div>
         <button style={S.iconBtn} title="Invite people" onClick={() => setShowInvite(true)}><QrCode size={18} /></button>
         {isAdmin && <button style={S.iconBtn} title="Manage members" onClick={() => setShowAdmin(true)}><Shield size={18} /></button>}
@@ -385,15 +449,41 @@ function ChangeNameModal({ session, group, me, onClose, onChanged }) {
   </Modal>;
 }
 
-// ---------- messages hook ----------
+// ---------- room items hook ----------
+// Seeds from the shared cache (so a room opens with its history already
+// painted), then keeps it fresh. A poll that changed nothing does not touch
+// state, so idle rooms cost no React reconciliation at all, and polls only
+// transfer messages newer than the newest one held.
 function useItems(prefix, ms = 2500) {
-  const [items, setItems] = useState([]);
-  const load = useCallback(async () => {
-    const all = await slistValues(prefix);
-    all.sort((a, b) => a.ts - b.ts); setItems(all);
+  const [items, setItems] = useState(() => roomCache.get(prefix) || []);
+  const [ready, setReady] = useState(() => roomCache.has(prefix));
+  const sigRef = useRef(sigOf(roomCache.get(prefix)));
+  const apply = useCallback((list) => {
+    const sig = sigOf(list);
+    if (sig !== sigRef.current) { sigRef.current = sig; setItems(list); }
+  }, []);
+  const reload = useCallback(async () => { apply(await syncRoom(prefix, true)); }, [prefix, apply]);
+  const poll = useCallback(async () => {
+    apply(await syncRoom(prefix));
+    setReady(true);
+  }, [prefix, apply]);
+  useEffect(() => {
+    poll();
+    const t = setInterval(poll, ms);
+    // Catch up immediately when the app comes back to the foreground.
+    const onVisible = () => { if (!document.hidden) poll(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(t); document.removeEventListener("visibilitychange", onVisible); };
+  }, [poll, ms]);
+  // A local edit (optimistic send/delete) that the next reload reconciles.
+  const mutate = useCallback((fn) => {
+    const next = fn(roomCache.get(prefix) || []);
+    if (!next) return;
+    roomCache.set(prefix, next);
+    sigRef.current = sigOf(next);
+    setItems(next);
   }, [prefix]);
-  useEffect(() => { load(); const t = setInterval(load, ms); return () => clearInterval(t); }, [load, ms]);
-  return [items, load];
+  return [items, reload, mutate, ready];
 }
 
 // One-line preview text for reply chains (Telegram-style).
@@ -449,10 +539,14 @@ function Composer({ me, onSend, placeholder }) {
 const senderLabel = (m) => m.system ? null : (m.anon ? anonLabel((m.author || "x") + (m.gid || "")) : m.authorName);
 // Telegram-style "who: what" line for a community card's newest message.
 const previewOf = (m, meKey) => m.system ? m.text : `${m.author === meKey ? "You" : (senderLabel(m) || "member")}: ${excerptOf(m.text)}`;
+// A long room mounts only the tail of its history; the rest stays one tap away.
+// Threads, reply previews and search still resolve against the full list.
+const WINDOW = 150;
 
 function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroupChange }) {
   const prefix = msgPrefix(group.id);
-  const [items, reload] = useItems(prefix);
+  const [items, reload, mutate, ready] = useItems(prefix);
+  const [shown, setShown] = useState(WINDOW);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState(null);
   const [replyTo, setReplyTo] = useState(null);
@@ -545,18 +639,27 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
   // Every message that replies to `key`, directly or transitively.
   const descendants = (key) => { const out = []; const seen = new Set([key]); let frontier = [key]; while (frontier.length) { const next = []; for (const fk of frontier) for (const m of items) { if (m.replyTo && m.replyTo.key === fk && !seen.has(m._key)) { seen.add(m._key); out.push(m); next.push(m._key); } } frontier = next; } return out; };
 
+  // Show local edits immediately; the reload that follows reconciles them.
+  const addLocal = useCallback((m) => mutate((cur) => (cur.some((x) => x._key === m._key) ? null : [...cur, m].sort((a, b) => a.ts - b.ts))), [mutate]);
+  const dropLocal = useCallback((key) => mutate((cur) => { const next = cur.filter((m) => m._key !== key); return next.length === cur.length ? null : next; }), [mutate]);
   const postMessage = async (text, anon, parent) => {
-    await messageSend(session, group.id, text, anon, parent ? { key: parent._key } : null);
+    const r = await messageSend(session, group.id, text, anon, parent ? { key: parent._key } : null);
+    if (r && r.ok && r.message) addLocal({ ...r.message, _key: r.key });
     reload();
   };
   const send = (text, anon) => { const parent = replyTo; setReplyTo(null); postMessage(text, anon, parent); };
-  const del = async (m) => { await messageDelete(session, group.id, m._key); reload(); };
+  const del = async (m) => { const r = await messageDelete(session, group.id, m._key); if (r && r.ok) dropLocal(m._key); reload(); };
   const togglePin = async (m) => {
     await setPin(session, group.id, m._key, !pins.some((p) => p.key === m._key));
     if (onGroupChange) onGroupChange();
   };
   const openThread = (m) => setThreadRoot(rootOf(m));
   const pinText = (pin) => { const m = byKey.get(pin.key); return m ? `${senderLabel(m)}: ${excerptOf(m.text)}` : "Deleted message"; };
+  // Render only the newest slice of a long room; the window always stretches
+  // to include the first unseen message, so opening still lands on it.
+  const unseenIdx = items.findIndex((m) => !m.system && m.author !== session.key && m.ts > openSeen);
+  const shownCount = Math.max(shown, unseenIdx >= 0 ? items.length - unseenIdx + 20 : 0);
+  const visible = items.length > shownCount ? items.slice(items.length - shownCount) : items;
   return <div style={S.chatArea}>
     <div style={S.searchBar}>
       <Search size={16} style={{ color: "#7b8a96", flexShrink: 0 }} />
@@ -573,16 +676,15 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
     {trimmed ? <div style={S.messages}>
       <div style={{ ...S.muted, padding: "2px 4px" }}>{results === null ? "Searching…" : `${results.length} result${results.length === 1 ? "" : "s"} across the whole history`}</div>
       {results && results.map((r) => <button key={r.key} style={S.result} onClick={() => { setResults(null); setQuery(""); setJumpTo(r.id); }}>
-        <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
-          <span style={{ color: SENDER, fontWeight: 600, fontSize: 13 }}>{r.anon ? anonLabel(r.author + group.id) : (r.authorName || "member")}</span>
-          <span style={S.time}>{fmtTime(r.ts)}</span>
-        </div>
+        <span style={{ color: SENDER, fontWeight: 600, fontSize: 13 }}>{r.anon ? anonLabel(r.author + group.id) : (r.authorName || "member")}</span>
         <div style={S.resultText}>{r.text}</div>
+        <div data-role="msg-stamp" style={S.stamp}>{fmtStamp(r.ts)}</div>
       </button>)}
       {results && results.length === 0 && <div style={S.empty}><p style={S.muted}>No messages match “{trimmed}”.</p></div>}
     </div> : <div ref={feedRef} onScroll={onFeedScroll} data-role="feed" data-unread-anchor={anchor || undefined} style={S.messages}>
-      {items.length === 0 && <div style={S.empty}><p style={S.muted}>Be the first to say hello 👋</p></div>}
-      {items.map((m) => {
+      {items.length === 0 && <div style={S.empty}><p style={S.muted}>{ready ? "Be the first to say hello 👋" : "Loading messages…"}</p></div>}
+      {visible.length < items.length && <button data-role="show-earlier" style={S.showEarlier} onClick={() => setShown(shownCount + WINDOW)}>Show earlier messages</button>}
+      {visible.map((m) => {
         if (m.system) return <div key={m.id} id={"msg-" + m.id} style={S.systemMsg} className="reveal">{m.text}</div>;
         const mine = m.author === session.key;
         const isMuted = mutedSet.has(m.author);
@@ -692,11 +794,11 @@ function ThreadModal({ root, items, byKey, me, onClose, onReply }) {
       {all.map((m, i) => <div key={m.id} style={{ ...S.reply, ...(i === 0 ? S.threadRoot : {}) }}>
         <div style={S.bubbleHead}>
           <span style={{ color: SENDER, fontWeight: 600, fontSize: 12 }}>{m.anon && <EyeOff size={10} style={{ verticalAlign: -1, marginRight: 3 }} />}{senderLabel(m)}</span>
-          <span style={S.time}>{fmtTime(m.ts)}</span>
           {i === 0 && <span style={{ ...S.pill, background: "#2dd4bf22", color: ACCENT, marginLeft: "auto" }}>ORIGINAL</span>}
         </div>
         {m.replyTo && <div style={{ fontSize: 11, color: MUTED, marginBottom: 2 }}>↩ {(() => { const par = byKey && byKey.get(m.replyTo.key); return par ? senderLabel(par) : "Deleted"; })()}</div>}
         <div style={{ fontSize: 14 }}>{m.text}</div>
+        <div data-role="msg-stamp" style={S.stamp}>{fmtStamp(m.ts)}</div>
       </div>)}
     </div>
     <div style={{ marginTop: 10 }}><Composer me={me} onSend={(t, a) => onReply(t, a)} placeholder="Reply in this thread…" /></div>
@@ -705,19 +807,39 @@ function ThreadModal({ root, items, byKey, me, onClose, onReply }) {
 
 function Forum({ session, group, me, isAdmin, mutes }) {
   const prefix = postPrefix(group.id);
-  const [items, reload] = useItems(prefix, 3000);
+  const [items, reload, mutate] = useItems(prefix, 3000);
   const [composing, setComposing] = useState(false);
-  const post = async (title, body, anon) => { await postCreate(session, group.id, title, body, anon); reload(); };
-  const del = async (p) => { await postDelete(session, group.id, p._key); reload(); };
-  const addReply = async (p, text, anon) => { await postReply(session, group.id, p._key, text, anon); reload(); };
-  const delReply = async (p, rid) => { await postDeleteReply(session, group.id, p._key, rid); reload(); };
+  const [shown, setShown] = useState(40);
+  // Show local edits immediately; the reload that follows reconciles them.
+  const addLocal = useCallback((p) => mutate((cur) => (cur.some((x) => x._key === p._key) ? null : [...cur, p].sort((a, b) => a.ts - b.ts))), [mutate]);
+  const replaceLocal = useCallback((key, p) => mutate((cur) => { const i = cur.findIndex((x) => x._key === key); if (i < 0) return null; const next = cur.slice(); next[i] = p; return next; }), [mutate]);
+  const dropLocal = useCallback((key) => mutate((cur) => { const next = cur.filter((p) => p._key !== key); return next.length === cur.length ? null : next; }), [mutate]);
+  const post = async (title, body, anon) => {
+    const r = await postCreate(session, group.id, title, body, anon);
+    if (r && r.ok && r.post) addLocal({ ...r.post, _key: r.key });
+    reload();
+  };
+  const del = async (p) => { const r = await postDelete(session, group.id, p._key); if (r && r.ok) dropLocal(p._key); reload(); };
+  const addReply = async (p, text, anon) => {
+    const r = await postReply(session, group.id, p._key, text, anon);
+    if (r && r.ok && r.post) replaceLocal(p._key, { ...r.post, _key: p._key });
+    reload();
+  };
+  const delReply = async (p, rid) => {
+    const r = await postDeleteReply(session, group.id, p._key, rid);
+    if (r && r.ok && r.post) replaceLocal(p._key, { ...r.post, _key: p._key });
+    reload();
+  };
   // A muted member's posts never reach the forum for the person who muted them.
   const mutedSet = new Set(mutes || []);
   const sorted = items.filter((p) => !mutedSet.has(p.author)).sort((a, b) => b.ts - a.ts);
+  // Newest posts first, and only the newest page is mounted for a long forum.
+  const visible = sorted.slice(0, shown);
   return <div style={S.chatArea}>
     <div style={S.feed}>
       {sorted.length === 0 && <div style={S.empty}><MapPin size={28} style={{ opacity: .5 }} /><p style={S.muted}>No posts yet. Share something with the forum.</p></div>}
-      {sorted.map((p) => <PostCard key={p.id} post={p} session={session} me={me} isAdmin={isAdmin} onDelete={() => del(p)} onReply={(t, a) => addReply(p, t, a)} onDeleteReply={(rid) => delReply(p, rid)} />)}
+      {visible.map((p) => <PostCard key={p.id} post={p} session={session} me={me} isAdmin={isAdmin} onDelete={() => del(p)} onReply={(t, a) => addReply(p, t, a)} onDeleteReply={(rid) => delReply(p, rid)} />)}
+      {visible.length < sorted.length && <button data-role="show-earlier" style={S.showEarlier} onClick={() => setShown(shown + 40)}>Show older posts ({sorted.length - visible.length})</button>}
     </div>
     <div style={S.composer}><button style={S.primary} onClick={() => setComposing(true)}><Plus size={18} /> New post</button></div>
     {composing && <PostComposer me={me} onClose={() => setComposing(false)} onPost={(t, b, a) => { post(t, b, a); setComposing(false); }} />}
@@ -731,20 +853,20 @@ function PostCard({ post, session, me, isAdmin, onDelete, onReply, onDeleteReply
   return <div style={S.post} className="reveal">
     <div style={S.bubbleHead}>
       <span style={{ color: post.anon ? "#2dd4bf" : "#7dd3fc", fontWeight: 600 }}>{post.anon && <EyeOff size={11} style={{ verticalAlign: -1, marginRight: 3 }} />}{senderLabel(post)}</span>
-      <span style={S.time}>{fmtTime(post.ts)}</span>
       {(isAdmin || mine) && <button style={S.miniDel} onClick={onDelete}><Trash2 size={12} /></button>}
     </div>
     {post.title && <div style={S.postTitle}>{post.title}</div>}
     <div style={{ color: "#cdd9e1" }}>{post.text}</div>
+    <div data-role="msg-stamp" style={S.stamp}>{fmtStamp(post.ts)}</div>
     <button style={S.replyToggle} onClick={() => setOpen((o) => !o)}>{replies.length} repl{replies.length === 1 ? "y" : "ies"} {open ? "▴" : "▾"}</button>
     {open && <div style={S.replyZone}>
       {replies.map((r) => { const rmine = r.author === session.key; return <div key={r.id} style={S.reply}>
         <div style={S.bubbleHead}>
           <span style={{ color: r.anon ? "#2dd4bf" : "#7dd3fc", fontWeight: 600, fontSize: 12 }}>{r.anon && <EyeOff size={10} style={{ verticalAlign: -1, marginRight: 3 }} />}{senderLabel(r)}</span>
-          <span style={S.time}>{fmtTime(r.ts)}</span>
           {(isAdmin || rmine) && <button style={S.miniDel} onClick={() => onDeleteReply(r.id)}><Trash2 size={11} /></button>}
         </div>
         <div style={{ fontSize: 14 }}>{r.text}</div>
+        <div data-role="msg-stamp" style={S.stamp}>{fmtStamp(r.ts)}</div>
       </div>; })}
       <Composer me={me} onSend={(t, a) => onReply(t, a)} placeholder="Add a reply…" />
     </div>}
@@ -878,8 +1000,8 @@ function Modal({ title, children, onClose }) {
     <div style={S.modalHead}><span style={{ fontWeight: 700 }}>{title}</span><button style={S.iconBtn} onClick={onClose}><X size={18} /></button></div>{children}
   </div></div>;
 }
-function fmtTime(ts) { const d = new Date(ts), n = new Date(); return d.toDateString() === n.toDateString() ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : d.toLocaleDateString([], { month: "short", day: "numeric" }); }
-// Every bubble carries its date and time in Eastern time, tucked into the
+// Every message — General bubbles, forum posts and replies, thread items and
+// search results — carries its date and time in Eastern time, tucked into the
 // bottom-right corner (Telegram-style). "EST" is the label the user asked for
 // even while the zone is on daylight time.
 function fmtStamp(ts) {
@@ -926,7 +1048,6 @@ const S = {
   bubble: { position: "relative", maxWidth: "92%", background: PANEL2, border: `1px solid ${LINE}`, borderRadius: 16, borderBottomLeftRadius: 5, padding: "9px 13px", fontSize: 15, lineHeight: 1.4, boxShadow: "0 1px 2px rgba(0,0,0,.35)" },
   bubbleMine: { background: "#123f38", border: "1px solid #1d5a50", borderBottomLeftRadius: 16, borderBottomRightRadius: 5 },
   bubbleHead: { display: "flex", alignItems: "center", gap: 8, marginBottom: 3, fontSize: 12 },
-  time: { color: MUTED, fontSize: 11 },
   stamp: { fontSize: 10, color: MUTED, textAlign: "right", marginTop: 3, letterSpacing: .2 },
   systemMsg: { alignSelf: "center", fontSize: 12, color: MUTED, background: PANEL2, borderRadius: 20, padding: "4px 12px", margin: "2px 0" },
   miniDel: { background: "transparent", border: "none", color: "#6b7a85", cursor: "pointer", padding: 2, display: "flex", marginLeft: "auto" },
@@ -969,6 +1090,7 @@ const S = {
   replyToggle: { background: "transparent", border: "none", color: ACCENT, cursor: "pointer", fontSize: 13, marginTop: 10, padding: 0 },
   replyZone: { marginTop: 10, borderTop: `1px solid ${LINE}`, paddingTop: 10, display: "flex", flexDirection: "column", gap: 8 },
   reply: { background: PANEL2, borderRadius: 10, padding: "7px 10px" },
+  showEarlier: { alignSelf: "center", background: "transparent", border: `1px solid ${LINE}`, color: MUTED, borderRadius: 20, padding: "5px 14px", fontSize: 12, cursor: "pointer", fontFamily: "inherit" },
   bottomBar: { display: "flex", gap: 10, padding: 14, borderTop: `1px solid ${LINE}`, background: PANEL },
   badge: { background: ACCENT, color: "#04201d", fontWeight: 700, fontSize: 12, minWidth: 22, height: 22, padding: "0 7px", borderRadius: 11, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
   scrollDown: { position: "absolute", right: 14, bottom: 78, zIndex: 35, width: 38, height: 38, borderRadius: "50%", background: PANEL, border: `1px solid ${LINE}`, color: ACCENT, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 6px 18px rgba(0,0,0,.45)" },

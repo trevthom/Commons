@@ -479,10 +479,18 @@ const server = http.createServer(async (req, res) => {
   }
   if (p === "/api/mget") {
     // Batch read: one request for a whole prefix (chat polls used to issue
-    // 1 + N requests per tick).
+    // 1 + N requests per tick). `since` makes it a delta read: values whose
+    // numeric `ts` is not newer are skipped, so polling a quiet room transfers
+    // (and serializes) almost nothing. Values without a `ts` are never filtered.
     const prefix = url.searchParams.get("prefix") || "";
+    const since = Number(url.searchParams.get("since")) || 0;
     const items = [];
-    for (const k of Object.keys(store)) if (k.startsWith(prefix) && !isAccountKey(k)) items.push([k, store[k]]);
+    for (const k of Object.keys(store)) {
+      if (!k.startsWith(prefix) || isAccountKey(k)) continue;
+      const v = store[k];
+      if (since && v && typeof v.ts === "number" && v.ts <= since) continue;
+      items.push([k, v]);
+    }
     return sendJSON(res, 200, { prefix, items });
   }
   if (p === "/api/list") {

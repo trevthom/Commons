@@ -118,6 +118,16 @@ const newAccount = async () => (await post("/api/account/create", {})).json;
   const badReply = await post("/api/message/send", { key: ownerKey, sessionId: ownerSid2, gid, text: "x", replyTo: { key: "msg:" + gid + ":general:0:nope" } });
   ok("a reply to a non-existent message is dropped", badReply.json.ok && !badReply.json.message.replyTo);
 
+  // --- delta reads (mget?since) are what the client polls with ---
+  const hist = await get(`/api/mget?prefix=${encodeURIComponent(`msg:${gid}:general:`)}`);
+  const firstKey = hist.json.items[0][0], firstTs = hist.json.items[0][1].ts;
+  const delta = await get(`/api/mget?prefix=${encodeURIComponent(`msg:${gid}:general:`)}&since=${firstTs}`);
+  ok("mget?since returns only what is newer than the cursor",
+    delta.json.items.every(([, v]) => v.ts > firstTs) && delta.json.items.length < hist.json.items.length && !delta.json.items.some(([k]) => k === firstKey),
+    { all: hist.json.items.length, delta: delta.json.items.length });
+  const nothingNew = await get(`/api/mget?prefix=${encodeURIComponent(`msg:${gid}:general:`)}&since=${hist.json.items[hist.json.items.length - 1][1].ts}`);
+  ok("mget?since returns nothing when the cursor is at the newest message", nothingNew.json.items.length === 0);
+
   // --- search runs server-side over the whole history ---
   const search = await post("/api/message/search", { key: memberKey, sessionId: memberSid, gid, q: "🔥" });
   ok("search finds a message by emoji", search.json && search.json.ok && search.json.results.length === 1 && search.json.results[0].key === msgKey1);

@@ -71,6 +71,10 @@ check("a formatted login key is shown", /[A-Z0-9]{4}(?: [A-Z0-9]{4}){3}/.test(ke
 check("clicked 'I saved it — continue'", click("I saved it — continue"));
 await sleep(800);
 check("the home screen rendered", /Your communities/.test(screen()));
+// The session must survive a relaunch of the installed app and be shared by
+// every tab, so it lives in localStorage (never sessionStorage alone).
+const persisted = (() => { try { return JSON.parse(dom.window.localStorage.getItem("cc_session_v2")); } catch { return null; } })();
+check("the session persists in localStorage for the next launch", !!persisted && typeof persisted.key === "string" && typeof persisted.sessionId === "string", persisted);
 
 // --- create a community ---
 check("clicked 'Create'", click("Create"));
@@ -97,6 +101,10 @@ check("the second tab is labelled 'Forum'", /Forum/.test(screen()) && !/Neighbor
 check("the invite icon has hover text", titled("Invite people"));
 check("the admin icon has hover text", titled("Manage members"));
 check("the username-change control has hover text", titled("Change your username"));
+const memberCountEl = document.querySelector('[data-role="member-count"]');
+check("the room header shows the member count", !!memberCountEl && /^1 member$/.test((memberCountEl.textContent || "").trim()), memberCountEl ? memberCountEl.textContent : "missing");
+const nameControl = [...document.querySelectorAll("button")].find((b) => b.title === "Change your username");
+check("the header reads '<username> ✎ · owner'", !!nameControl && (nameControl.textContent || "").includes("tester ✎ · owner"), nameControl ? nameControl.textContent : "missing");
 check("the header anonymous toggle is gone", !titled("Posting anonymously by default") && !titled("Posting with your username"));
 check("the per-message anonymous toggle remains", titled("Sending as tester"));
 check("a search box is present", !!inputByPlaceholder("Search all messages"));
@@ -134,6 +142,8 @@ await sleep(600);
 check("search lists the matching message", /banana bread/.test(screen()));
 check("search shows only matches", !/hello world/.test(screen()));
 check("search reports how many results it found", /1 result across the whole history/.test(screen()));
+const searchStamp = document.querySelector('[data-role="msg-stamp"]');
+check("search results carry the Eastern timestamp", !!searchStamp && /EST$/.test((searchStamp.textContent || "").trim()));
 setInput(inputByPlaceholder("Search all messages"), "zzz-no-match");
 await sleep(600);
 check("an empty result explains itself", /No messages match/.test(screen()));
@@ -227,6 +237,8 @@ check("clicked View message thread", click("View message thread"));
 await sleep(300);
 const threadSheet = document.querySelector(".sheet");
 check("the thread modal lists the chain", !!threadSheet && /Message thread/.test(threadSheet.textContent) && /ORIGINAL/.test(threadSheet.textContent) && /replying to hello/.test(threadSheet.textContent));
+const threadStamps = [...threadSheet.querySelectorAll('[data-role="msg-stamp"]')];
+check("thread items carry the Eastern timestamp", threadStamps.length === 2 && threadStamps.every((s) => /EST$/.test((s.textContent || "").trim())), `${threadStamps.length} stamps`);
 threadSheet.querySelector("button").click();
 await sleep(200);
 check("the thread modal closed", !document.querySelector(".sheet"));
@@ -301,6 +313,8 @@ await sleep(800);
 check("the home screen rendered again", /Your communities/.test(screen()));
 const card = document.querySelector('[data-role="group-card"]');
 check("the community card is present", !!card);
+check("the community card does not show your role", !!card && card.querySelectorAll("svg").length === 0 && !/owner|admin/i.test(card.textContent), card ? card.textContent : "no card");
+check("the community card does not show the member count", !!card && !/member/i.test(card.textContent), card ? card.textContent : "no card");
 const badge = card && card.querySelector('[data-role="unread-badge"]');
 check("the card shows the unread count", !!badge && badge.textContent.trim() === "2", badge ? badge.textContent : "no badge");
 check("the card previews the newest message", !!card && /bob solo/.test(card.textContent), card ? card.textContent : "");
@@ -437,6 +451,41 @@ check("the muted author's post is hidden in the forum", !/bob forum post/.test(s
 const postsRes = await (await fetch(BASE + "/api/mget?prefix=" + encodeURIComponent("post:" + testGroup.id + ":"))).json();
 check("(that post really exists server-side)", postsRes.items.some(([, v]) => v.text === "bob forum post"));
 check("the forum copy says forum", /Share something with the forum/.test(screen()));
+
+// --- forum timestamps use the same bottom-right Eastern stamp ---
+check("clicked 'New post'", click("New post"));
+await sleep(300);
+const postTitleEl = inputByPlaceholder("Lost cat, recommendation, alert…");
+const postBodyEl = [...document.querySelectorAll("textarea")].pop();
+check("the post composer is open", !!postTitleEl && !!postBodyEl);
+setInput(postTitleEl, "Stamp check");
+setInput(postBodyEl, "forum stamp check");
+// "Post" alone would also match the "Posting as …" toggle, so match the button exactly.
+const submitPost = [...document.querySelectorAll("button")].find((b) => !b.disabled && (b.textContent || "").trim() === "Post");
+check("clicked the post submit button", !!submitPost);
+if (submitPost) submitPost.click();
+await sleep(1600);
+const myPost = [...document.querySelectorAll("#root .reveal")].find((d) => (d.textContent || "").includes("forum stamp check"));
+const myPostStamp = myPost && myPost.querySelector('[data-role="msg-stamp"]');
+check("a forum post carries the Eastern timestamp", !!myPostStamp && /EST$/.test((myPostStamp.textContent || "").trim()), myPostStamp ? myPostStamp.textContent : "no stamp");
+
+// --- relaunching the installed app restores the same session ---
+// localStorage survives a relaunch, so a second page load seeded with what the
+// first one saved must land on Home without asking for a key again.
+const relaunch = await JSDOM.fromURL(BASE + "/", {
+  runScripts: "dangerously", resources: "usable", pretendToBeVisual: true, virtualConsole: new VirtualConsole(),
+  beforeParse(window) {
+    window.localStorage.setItem("cc_session_v2", JSON.stringify(persisted));
+    window.fetch = (input, init) => fetch(new URL(String(input), BASE), init);
+    window.Element.prototype.scrollIntoView = function () {};
+  },
+});
+await sleep(1500);
+const relaunchRoot = relaunch.window.document.getElementById("root");
+const relaunchText = (() => { const clone = relaunchRoot.cloneNode(true); clone.querySelectorAll("style, script").forEach((n) => n.remove()); return clone.textContent || ""; })();
+check("reopening the app restores the stored session", /Your communities/.test(relaunchText) && !/Create a new account/.test(relaunchText), relaunchText.slice(0, 80));
+check("the restored session still lists the community", !!relaunchRoot.querySelector('[data-role="group-card"]'));
+relaunch.window.close();
 
 check("no uncaught script errors", errors.length === 0);
 if (errors.length) console.log("\njsdom errors:\n" + errors.join("\n"));

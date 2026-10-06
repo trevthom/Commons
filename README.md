@@ -54,8 +54,10 @@ Open the app in a browser, or install it as a PWA on a phone.
 - **I have a login key** signs you in on another device. Logging in
   **rotates your session and logs you out everywhere else** — one active
   session per account.
-- Closing the tab logs you out (you'll need the key again). There's also a
-  **Log out** button in the app.
+- Your session is remembered: closing the tab or quitting the installed app
+  and reopening it takes you straight back in, and two tabs of the same browser
+  share the session. Signing in with your key elsewhere, or the **Log out**
+  button, is what ends it.
 
 ## Usernames
 
@@ -137,4 +139,7 @@ Desktop: install icon in the address bar. (Requires HTTPS when hosted publicly.)
 - `data.json` is fine for dozens of users; move to SQLite beyond that. A file
   that fails to parse is moved aside as `data.json.corrupt-<timestamp>` rather
   than overwritten.
+- The client keeps one in-memory copy of each room's history and shares it
+  between the community list and the room, so opening a room is instant; polls
+  then fetch only messages newer than the newest one it already has.
 - Reset everything: stop the server and delete `data.json`.
