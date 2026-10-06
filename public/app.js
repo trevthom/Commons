@@ -620,7 +620,7 @@ function MsgMenu({ mine, isAdmin, hasThread, muted, pinned, onClose, onReply, on
     icon,
     /* @__PURE__ */ React.createElement("span", null, label)
   );
-  return /* @__PURE__ */ React.createElement("div", { "data-role": "msg-menu", style: S.menu, onClick: (e) => e.stopPropagation() }, item(/* @__PURE__ */ React.createElement(CornerUpLeft, { size: 15 }), "Reply", onReply), hasThread && item(/* @__PURE__ */ React.createElement(MessageSquare, { size: 15 }), "View message thread", onThread), isAdmin && item(pinned ? /* @__PURE__ */ React.createElement(PinOff, { size: 15 }) : /* @__PURE__ */ React.createElement(Pin, { size: 15 }), pinned ? "Unpin message" : "Pin message", onTogglePin), !mine && item(muted ? /* @__PURE__ */ React.createElement(BellOff, { size: 15 }) : /* @__PURE__ */ React.createElement(Bell, { size: 15 }), muted ? "Unmute user" : "Mute user", onToggleMute), (mine || isAdmin) && item(/* @__PURE__ */ React.createElement(Trash2, { size: 15 }), "Delete message", onDelete, true));
+  return /* @__PURE__ */ React.createElement("div", { "data-role": "msg-menu", style: { ...S.menu, ...mine ? S.menuMine : S.menuTheirs }, onClick: (e) => e.stopPropagation() }, item(/* @__PURE__ */ React.createElement(CornerUpLeft, { size: 15 }), "Reply", onReply), hasThread && item(/* @__PURE__ */ React.createElement(MessageSquare, { size: 15 }), "View message thread", onThread), isAdmin && item(pinned ? /* @__PURE__ */ React.createElement(PinOff, { size: 15 }) : /* @__PURE__ */ React.createElement(Pin, { size: 15 }), pinned ? "Unpin message" : "Pin message", onTogglePin), !mine && item(muted ? /* @__PURE__ */ React.createElement(BellOff, { size: 15 }) : /* @__PURE__ */ React.createElement(Bell, { size: 15 }), muted ? "Unmute user" : "Mute user", onToggleMute), (mine || isAdmin) && item(/* @__PURE__ */ React.createElement(Trash2, { size: 15 }), "Delete message", onDelete, true));
 }
 function ReplyPreview({ replyTo, byKey, mutedSet, revealed, onReveal }) {
   const parent = byKey.get(replyTo.key);
@@ -805,7 +805,12 @@ const S = {
   time: { color: MUTED, fontSize: 11 },
   systemMsg: { alignSelf: "center", fontSize: 12, color: MUTED, background: PANEL2, borderRadius: 20, padding: "4px 12px", margin: "2px 0" },
   miniDel: { background: "transparent", border: "none", color: "#6b7a85", cursor: "pointer", padding: 2, display: "flex", marginLeft: "auto" },
-  menu: { position: "absolute", top: 24, right: 4, zIndex: 30, minWidth: 178, background: "#0f1620", border: `1px solid ${LINE}`, borderRadius: 12, padding: 4, boxShadow: "0 12px 32px rgba(0,0,0,.55)" },
+  menu: { position: "absolute", top: 24, zIndex: 30, minWidth: 178, background: "#0f1620", border: `1px solid ${LINE}`, borderRadius: 12, padding: 4, boxShadow: "0 12px 32px rgba(0,0,0,.55)" },
+  // Anchor the menu to whichever edge the bubble is aligned to, so it always
+  // grows inward. A short left-aligned message leaves almost no room to its
+  // left, and a right-anchored 178px menu would run off the screen's left edge.
+  menuMine: { right: 4 },
+  menuTheirs: { left: 4 },
   menuItem: { display: "flex", alignItems: "center", gap: 9, width: "100%", background: "transparent", border: "none", color: TEXT, padding: "9px 10px", borderRadius: 8, cursor: "pointer", fontSize: 14, textAlign: "left", fontFamily: "inherit" },
   menuItemDanger: { color: "#f87171" },
   mutedBubble: { borderStyle: "dashed", opacity: 0.92 },
