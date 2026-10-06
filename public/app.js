@@ -8,6 +8,7 @@ const {
   EyeOff,
   Link2,
   QrCode,
+  Search,
   X,
   Trash2,
   UserMinus,
@@ -307,7 +308,6 @@ function GroupApp({ session, group, setGroup, tab, setTab, onLeave, onLogout }) 
   const [showInvite, setShowInvite] = useState(false);
   const [showAdmin, setShowAdmin] = useState(false);
   const [changingName, setChangingName] = useState(false);
-  const [anonDefault, setAnonDefault] = useState(false);
   const me = group.members[session.key];
   const isOwner = group.ownerKey === session.key;
   const isAdmin = isOwner || (group.admins || []).includes(session.key);
@@ -326,7 +326,7 @@ function GroupApp({ session, group, setGroup, tab, setTab, onLeave, onLogout }) 
     return () => clearInterval(t);
   }, [reloadGroup]);
   if (needsName) return /* @__PURE__ */ React.createElement(UsernamePicker, { session, group, onSet: (g) => setGroup(g), onLeave });
-  return /* @__PURE__ */ React.createElement("div", { style: S.screen }, /* @__PURE__ */ React.createElement("div", { style: S.appHeader }, /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, onClick: onLeave }, /* @__PURE__ */ React.createElement(ChevronLeft, { size: 20 })), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700 } }, group.name), /* @__PURE__ */ React.createElement("button", { style: S.nameBtn, onClick: () => setChangingName(true) }, me.username, isOwner ? " \xB7 owner" : isAdmin ? " \xB7 admin" : "", " \u270E")), /* @__PURE__ */ React.createElement(AnonToggle, { anon: anonDefault, setAnon: setAnonDefault }), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, onClick: () => setShowInvite(true) }, /* @__PURE__ */ React.createElement(QrCode, { size: 18 })), isAdmin && /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, onClick: () => setShowAdmin(true) }, /* @__PURE__ */ React.createElement(Shield, { size: 18 })), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Log out", onClick: onLogout }, /* @__PURE__ */ React.createElement(LogOut, { size: 18 }))), /* @__PURE__ */ React.createElement("div", { style: S.tabs }, /* @__PURE__ */ React.createElement("button", { style: { ...S.tab, ...tab === "general" ? S.tabActive : {} }, onClick: () => setTab("general") }, /* @__PURE__ */ React.createElement(MessageSquare, { size: 16 }), " General"), /* @__PURE__ */ React.createElement("button", { style: { ...S.tab, ...tab === "neighborhood" ? S.tabActive : {} }, onClick: () => setTab("neighborhood") }, /* @__PURE__ */ React.createElement(MapPin, { size: 16 }), " Neighborhood")), tab === "general" ? /* @__PURE__ */ React.createElement(GeneralChat, { session, group, me, isAdmin, anonDefault }) : /* @__PURE__ */ React.createElement(Neighborhood, { session, group, me, isAdmin, anonDefault }), showInvite && /* @__PURE__ */ React.createElement(InviteModal, { group, onClose: () => setShowInvite(false) }), showAdmin && isAdmin && /* @__PURE__ */ React.createElement(AdminModal, { session, group, isOwner, onClose: () => setShowAdmin(false), onChange: reloadGroup, onDeleted: onLeave }), changingName && /* @__PURE__ */ React.createElement(ChangeNameModal, { session, group, me, onClose: () => setChangingName(false), onChanged: (g) => {
+  return /* @__PURE__ */ React.createElement("div", { style: S.screen }, /* @__PURE__ */ React.createElement("div", { style: S.appHeader }, /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, onClick: onLeave }, /* @__PURE__ */ React.createElement(ChevronLeft, { size: 20 })), /* @__PURE__ */ React.createElement("div", { style: { flex: 1 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700 } }, group.name), /* @__PURE__ */ React.createElement("button", { style: S.nameBtn, onClick: () => setChangingName(true) }, me.username, isOwner ? " \xB7 owner" : isAdmin ? " \xB7 admin" : "", " \u270E")), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Invite people", onClick: () => setShowInvite(true) }, /* @__PURE__ */ React.createElement(QrCode, { size: 18 })), isAdmin && /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Manage members", onClick: () => setShowAdmin(true) }, /* @__PURE__ */ React.createElement(Shield, { size: 18 })), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Log out", onClick: onLogout }, /* @__PURE__ */ React.createElement(LogOut, { size: 18 }))), /* @__PURE__ */ React.createElement("div", { style: S.tabs }, /* @__PURE__ */ React.createElement("button", { style: { ...S.tab, ...tab === "general" ? S.tabActive : {} }, onClick: () => setTab("general") }, /* @__PURE__ */ React.createElement(MessageSquare, { size: 16 }), " General"), /* @__PURE__ */ React.createElement("button", { style: { ...S.tab, ...tab === "forum" ? S.tabActive : {} }, onClick: () => setTab("forum") }, /* @__PURE__ */ React.createElement(MapPin, { size: 16 }), " Forum")), tab === "general" ? /* @__PURE__ */ React.createElement(GeneralChat, { session, group, me, isAdmin }) : /* @__PURE__ */ React.createElement(Forum, { session, group, me, isAdmin }), showInvite && /* @__PURE__ */ React.createElement(InviteModal, { group, onClose: () => setShowInvite(false) }), showAdmin && isAdmin && /* @__PURE__ */ React.createElement(AdminModal, { session, group, isOwner, onClose: () => setShowAdmin(false), onChange: reloadGroup, onDeleted: onLeave }), changingName && /* @__PURE__ */ React.createElement(ChangeNameModal, { session, group, me, onClose: () => setChangingName(false), onChanged: (g) => {
     setGroup(g);
   } }));
 }
@@ -371,9 +371,6 @@ function ChangeNameModal({ session, group, me, onClose, onChanged }) {
   };
   return /* @__PURE__ */ React.createElement(Modal, { onClose, title: "Change username" }, /* @__PURE__ */ React.createElement("p", { style: S.muted }, "You can change your name once every 60 days. Everyone will see a note that your name changed. Your old name stays reserved to you."), /* @__PURE__ */ React.createElement("label", { style: { ...S.label, marginTop: 12 } }, "New username"), /* @__PURE__ */ React.createElement("input", { style: S.input, value: name, onChange: (e) => setName(e.target.value), maxLength: 24 }), err && /* @__PURE__ */ React.createElement("div", { style: S.error }, err), /* @__PURE__ */ React.createElement("button", { style: { ...S.primary, marginTop: 14, opacity: name.trim() ? 1 : 0.5 }, disabled: !name.trim() || busy, onClick: submit }, busy ? "Saving\u2026" : "Save"));
 }
-function AnonToggle({ anon, setAnon }) {
-  return /* @__PURE__ */ React.createElement("button", { style: { ...S.iconBtn, color: anon ? "#2dd4bf" : "#e8eef2" }, title: anon ? "Posting anonymously by default" : "Posting with your username", onClick: () => setAnon(!anon) }, anon ? /* @__PURE__ */ React.createElement(EyeOff, { size: 18 }) : /* @__PURE__ */ React.createElement(Eye, { size: 18 }));
-}
 function useItems(prefix, ms = 2500) {
   const [items, setItems] = useState([]);
   const load = useCallback(async () => {
@@ -388,10 +385,10 @@ function useItems(prefix, ms = 2500) {
   }, [load, ms]);
   return [items, load];
 }
-function Composer({ me, anonDefault, onSend, placeholder }) {
+function Composer({ me, onSend, placeholder }) {
   const [text, setText] = useState("");
   const [anonOverride, setAnonOverride] = useState(null);
-  const anon = anonOverride === null ? anonDefault : anonOverride;
+  const anon = !!anonOverride;
   const send = () => {
     if (!text.trim()) return;
     onSend(text.trim(), anon);
@@ -402,9 +399,10 @@ function Composer({ me, anonDefault, onSend, placeholder }) {
   } }), /* @__PURE__ */ React.createElement("button", { style: S.sendBtn, onClick: send }, /* @__PURE__ */ React.createElement(Send, { size: 18 })));
 }
 const senderLabel = (m) => m.system ? null : m.anon ? anonLabel((m.author || "x") + (m.gid || "")) : m.authorName;
-function GeneralChat({ session, group, me, isAdmin, anonDefault }) {
+function GeneralChat({ session, group, me, isAdmin }) {
   const prefix = msgPrefix(group.id);
   const [items, reload] = useItems(prefix);
+  const [query, setQuery] = useState("");
   const endRef = useRef(null);
   useEffect(() => {
     endRef.current && endRef.current.scrollIntoView({ behavior: "smooth" });
@@ -418,13 +416,15 @@ function GeneralChat({ session, group, me, isAdmin, anonDefault }) {
     await sdelete(m._key);
     reload();
   };
-  return /* @__PURE__ */ React.createElement("div", { style: S.chatArea }, /* @__PURE__ */ React.createElement("div", { style: S.messages }, items.length === 0 && /* @__PURE__ */ React.createElement("div", { style: S.empty }, /* @__PURE__ */ React.createElement("p", { style: S.muted }, "Be the first to say hello \u{1F44B}")), items.map((m) => {
+  const q = query.trim().toLowerCase();
+  const shown = q ? items.filter((m) => !m.system && (m.text || "").toLowerCase().includes(q)) : items;
+  return /* @__PURE__ */ React.createElement("div", { style: S.chatArea }, /* @__PURE__ */ React.createElement("div", { style: S.searchBar }, /* @__PURE__ */ React.createElement(Search, { size: 16, style: { color: "#7b8a96", flexShrink: 0 } }), /* @__PURE__ */ React.createElement("input", { style: S.searchInput, value: query, placeholder: "Search messages", onChange: (e) => setQuery(e.target.value) }), query && /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Clear search", onClick: () => setQuery("") }, /* @__PURE__ */ React.createElement(X, { size: 16 }))), /* @__PURE__ */ React.createElement("div", { style: S.messages }, shown.length === 0 && /* @__PURE__ */ React.createElement("div", { style: S.empty }, /* @__PURE__ */ React.createElement("p", { style: S.muted }, q ? `No messages match \u201C${query.trim()}\u201D.` : "Be the first to say hello \u{1F44B}")), shown.map((m) => {
     if (m.system) return /* @__PURE__ */ React.createElement("div", { key: m.id, style: S.systemMsg, className: "reveal" }, m.text);
     const mine = m.author === session.key;
     return /* @__PURE__ */ React.createElement("div", { key: m.id, style: { ...S.bubbleRow, justifyContent: mine ? "flex-end" : "flex-start" }, className: "reveal" }, /* @__PURE__ */ React.createElement("div", { style: { ...S.bubble, ...mine ? S.bubbleMine : {} } }, /* @__PURE__ */ React.createElement("div", { style: S.bubbleHead }, /* @__PURE__ */ React.createElement("span", { style: { color: m.anon ? "#2dd4bf" : "#7dd3fc", fontWeight: 600 } }, m.anon && /* @__PURE__ */ React.createElement(EyeOff, { size: 11, style: { verticalAlign: -1, marginRight: 3 } }), senderLabel(m)), /* @__PURE__ */ React.createElement("span", { style: S.time }, fmtTime(m.ts)), (isAdmin || mine) && /* @__PURE__ */ React.createElement("button", { style: S.miniDel, onClick: () => del(m) }, /* @__PURE__ */ React.createElement(Trash2, { size: 12 }))), /* @__PURE__ */ React.createElement("div", null, m.text)));
-  }), /* @__PURE__ */ React.createElement("div", { ref: endRef })), /* @__PURE__ */ React.createElement(Composer, { me, anonDefault, onSend: send, placeholder: "Message the whole community\u2026" }));
+  }), /* @__PURE__ */ React.createElement("div", { ref: endRef })), /* @__PURE__ */ React.createElement(Composer, { me, onSend: send, placeholder: "Message the whole community\u2026" }));
 }
-function Neighborhood({ session, group, me, isAdmin, anonDefault }) {
+function Forum({ session, group, me, isAdmin }) {
   const prefix = postPrefix(group.id);
   const [items, reload] = useItems(prefix, 3e3);
   const [composing, setComposing] = useState(false);
@@ -451,26 +451,26 @@ function Neighborhood({ session, group, me, isAdmin, anonDefault }) {
     reload();
   };
   const sorted = [...items].sort((a, b) => b.ts - a.ts);
-  return /* @__PURE__ */ React.createElement("div", { style: S.chatArea }, /* @__PURE__ */ React.createElement("div", { style: S.feed }, sorted.length === 0 && /* @__PURE__ */ React.createElement("div", { style: S.empty }, /* @__PURE__ */ React.createElement(MapPin, { size: 28, style: { opacity: 0.5 } }), /* @__PURE__ */ React.createElement("p", { style: S.muted }, "No posts yet. Share something with the neighborhood.")), sorted.map((p) => /* @__PURE__ */ React.createElement(PostCard, { key: p.id, post: p, session, me, isAdmin, anonDefault, onDelete: () => del(p), onReply: (t, a) => addReply(p, t, a), onDeleteReply: (rid) => delReply(p, rid) }))), /* @__PURE__ */ React.createElement("div", { style: S.composer }, /* @__PURE__ */ React.createElement("button", { style: S.primary, onClick: () => setComposing(true) }, /* @__PURE__ */ React.createElement(Plus, { size: 18 }), " New post")), composing && /* @__PURE__ */ React.createElement(PostComposer, { me, anonDefault, onClose: () => setComposing(false), onPost: (t, b, a) => {
+  return /* @__PURE__ */ React.createElement("div", { style: S.chatArea }, /* @__PURE__ */ React.createElement("div", { style: S.feed }, sorted.length === 0 && /* @__PURE__ */ React.createElement("div", { style: S.empty }, /* @__PURE__ */ React.createElement(MapPin, { size: 28, style: { opacity: 0.5 } }), /* @__PURE__ */ React.createElement("p", { style: S.muted }, "No posts yet. Share something with the forum.")), sorted.map((p) => /* @__PURE__ */ React.createElement(PostCard, { key: p.id, post: p, session, me, isAdmin, onDelete: () => del(p), onReply: (t, a) => addReply(p, t, a), onDeleteReply: (rid) => delReply(p, rid) }))), /* @__PURE__ */ React.createElement("div", { style: S.composer }, /* @__PURE__ */ React.createElement("button", { style: S.primary, onClick: () => setComposing(true) }, /* @__PURE__ */ React.createElement(Plus, { size: 18 }), " New post")), composing && /* @__PURE__ */ React.createElement(PostComposer, { me, onClose: () => setComposing(false), onPost: (t, b, a) => {
     post(t, b, a);
     setComposing(false);
   } }));
 }
-function PostCard({ post, session, me, isAdmin, anonDefault, onDelete, onReply, onDeleteReply }) {
+function PostCard({ post, session, me, isAdmin, onDelete, onReply, onDeleteReply }) {
   const [open, setOpen] = useState(false);
   const mine = post.author === session.key;
   const replies = post.replies || [];
   return /* @__PURE__ */ React.createElement("div", { style: S.post, className: "reveal" }, /* @__PURE__ */ React.createElement("div", { style: S.bubbleHead }, /* @__PURE__ */ React.createElement("span", { style: { color: post.anon ? "#2dd4bf" : "#7dd3fc", fontWeight: 600 } }, post.anon && /* @__PURE__ */ React.createElement(EyeOff, { size: 11, style: { verticalAlign: -1, marginRight: 3 } }), senderLabel(post)), /* @__PURE__ */ React.createElement("span", { style: S.time }, fmtTime(post.ts)), (isAdmin || mine) && /* @__PURE__ */ React.createElement("button", { style: S.miniDel, onClick: onDelete }, /* @__PURE__ */ React.createElement(Trash2, { size: 12 }))), post.title && /* @__PURE__ */ React.createElement("div", { style: S.postTitle }, post.title), /* @__PURE__ */ React.createElement("div", { style: { color: "#cdd9e1" } }, post.text), /* @__PURE__ */ React.createElement("button", { style: S.replyToggle, onClick: () => setOpen((o) => !o) }, replies.length, " repl", replies.length === 1 ? "y" : "ies", " ", open ? "\u25B4" : "\u25BE"), open && /* @__PURE__ */ React.createElement("div", { style: S.replyZone }, replies.map((r) => {
     const rmine = r.author === session.key;
     return /* @__PURE__ */ React.createElement("div", { key: r.id, style: S.reply }, /* @__PURE__ */ React.createElement("div", { style: S.bubbleHead }, /* @__PURE__ */ React.createElement("span", { style: { color: r.anon ? "#2dd4bf" : "#7dd3fc", fontWeight: 600, fontSize: 12 } }, r.anon && /* @__PURE__ */ React.createElement(EyeOff, { size: 10, style: { verticalAlign: -1, marginRight: 3 } }), senderLabel(r)), /* @__PURE__ */ React.createElement("span", { style: S.time }, fmtTime(r.ts)), (isAdmin || rmine) && /* @__PURE__ */ React.createElement("button", { style: S.miniDel, onClick: () => onDeleteReply(r.id) }, /* @__PURE__ */ React.createElement(Trash2, { size: 11 }))), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 14 } }, r.text));
-  }), /* @__PURE__ */ React.createElement(Composer, { me, anonDefault, onSend: (t, a) => onReply(t, a), placeholder: "Add a reply\u2026" })));
+  }), /* @__PURE__ */ React.createElement(Composer, { me, onSend: (t, a) => onReply(t, a), placeholder: "Add a reply\u2026" })));
 }
-function PostComposer({ me, anonDefault, onClose, onPost }) {
+function PostComposer({ me, onClose, onPost }) {
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [anonOverride, setAnonOverride] = useState(null);
-  const anon = anonOverride === null ? anonDefault : anonOverride;
-  return /* @__PURE__ */ React.createElement(Modal, { onClose, title: "New neighborhood post" }, /* @__PURE__ */ React.createElement("label", { style: S.label }, "Title (optional)"), /* @__PURE__ */ React.createElement("input", { style: S.input, value: title, onChange: (e) => setTitle(e.target.value), placeholder: "Lost cat, recommendation, alert\u2026", maxLength: 80 }), /* @__PURE__ */ React.createElement("label", { style: { ...S.label, marginTop: 10 } }, "What's happening?"), /* @__PURE__ */ React.createElement("textarea", { style: { ...S.input, minHeight: 90, resize: "vertical" }, value: body, onChange: (e) => setBody(e.target.value) }), /* @__PURE__ */ React.createElement("button", { style: { ...S.toggleRow, marginTop: 12 }, onClick: () => setAnonOverride(!anon) }, anon ? /* @__PURE__ */ React.createElement(EyeOff, { size: 16 }) : /* @__PURE__ */ React.createElement(Eye, { size: 16 }), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, textAlign: "left" } }, anon ? "Posting anonymously" : "Posting as " + me.username), /* @__PURE__ */ React.createElement("span", { style: { ...S.pill, background: anon ? "#2dd4bf22" : "#ffffff14", color: anon ? "#2dd4bf" : "#9fb0bd" } }, anon ? "ANON" : "NAMED")), /* @__PURE__ */ React.createElement("button", { style: { ...S.primary, marginTop: 14, opacity: body.trim() ? 1 : 0.5 }, disabled: !body.trim(), onClick: () => onPost(title.trim(), body.trim(), anon) }, "Post"));
+  const anon = !!anonOverride;
+  return /* @__PURE__ */ React.createElement(Modal, { onClose, title: "New forum post" }, /* @__PURE__ */ React.createElement("label", { style: S.label }, "Title (optional)"), /* @__PURE__ */ React.createElement("input", { style: S.input, value: title, onChange: (e) => setTitle(e.target.value), placeholder: "Lost cat, recommendation, alert\u2026", maxLength: 80 }), /* @__PURE__ */ React.createElement("label", { style: { ...S.label, marginTop: 10 } }, "What's happening?"), /* @__PURE__ */ React.createElement("textarea", { style: { ...S.input, minHeight: 90, resize: "vertical" }, value: body, onChange: (e) => setBody(e.target.value) }), /* @__PURE__ */ React.createElement("button", { style: { ...S.toggleRow, marginTop: 12 }, onClick: () => setAnonOverride(!anon) }, anon ? /* @__PURE__ */ React.createElement(EyeOff, { size: 16 }) : /* @__PURE__ */ React.createElement(Eye, { size: 16 }), /* @__PURE__ */ React.createElement("span", { style: { flex: 1, textAlign: "left" } }, anon ? "Posting anonymously" : "Posting as " + me.username), /* @__PURE__ */ React.createElement("span", { style: { ...S.pill, background: anon ? "#2dd4bf22" : "#ffffff14", color: anon ? "#2dd4bf" : "#9fb0bd" } }, anon ? "ANON" : "NAMED")), /* @__PURE__ */ React.createElement("button", { style: { ...S.primary, marginTop: 14, opacity: body.trim() ? 1 : 0.5 }, disabled: !body.trim(), onClick: () => onPost(title.trim(), body.trim(), anon) }, "Post"));
 }
 function InviteModal({ group, onClose }) {
   const link = `${window.location.origin}${window.location.pathname}#join=${group.invite}`;
@@ -543,6 +543,8 @@ const S = {
   scroll: { flex: 1, overflowY: "auto", padding: 14, display: "flex", flexDirection: "column", gap: 10 },
   chatArea: { flex: 1, display: "flex", flexDirection: "column", minHeight: 0 },
   messages: { flex: 1, overflowY: "auto", padding: 14, display: "flex", flexDirection: "column", gap: 10 },
+  searchBar: { display: "flex", alignItems: "center", gap: 8, padding: "9px 14px", borderBottom: `1px solid ${LINE}`, background: PANEL },
+  searchInput: { flex: 1, background: PANEL2, border: `1px solid ${LINE}`, color: TEXT, borderRadius: 20, padding: "8px 14px", outline: "none", fontSize: 14, fontFamily: "inherit" },
   feed: { flex: 1, overflowY: "auto", padding: 14, display: "flex", flexDirection: "column", gap: 12 },
   bubbleRow: { display: "flex" },
   bubble: { maxWidth: "80%", background: PANEL2, border: `1px solid ${LINE}`, borderRadius: 14, padding: "9px 12px", fontSize: 15, lineHeight: 1.4 },

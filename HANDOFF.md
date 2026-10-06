@@ -26,7 +26,7 @@ Any instructions elsewhere describing TanStack Start, Vite, Convex, or shadcn
 | `public/sw.js` | Service worker (app-shell cache). |
 | `public/*.min.js`, `lucide.js`, `qrcode.min.js` | Vendored libraries. Do not hand-edit. |
 | `tools/smoke.mjs` | Dependency-free API test (needs a running server). |
-| `tools/render-test.mjs` | Loads the real page in jsdom and drives the sign-up flow. |
+| `tools/render-test.mjs` | Loads the real page in jsdom and drives sign-up, community creation, message search, and the Forum tab. |
 | `data.json` | Runtime database. **Never commit** (gitignored). |
 
 ## Build & run
@@ -114,8 +114,14 @@ Generic content KV (messages and posts only):
   of 1 + N).
 - Polling intervals: session 4s, group 3s, messages 2.5s, posts 3s.
 - `api.get/post` return `null` on any failure, so callers can `if (r && r.ok)`.
-- Anonymity is per-community and per-message; anonymous labels are derived from
-  `author + gid` (`anonLabel`), so they are stable within a community.
+- The group's second tab is the **Forum** (bulletin-board posts under `post:
+  keys`); the first is **General** (chat under `msg:` keys).
+- Anonymity is **per-message only**, via the eye button beside the composer. The
+  per-community default toggle was intentionally removed. Anonymous labels are
+  derived from `author + gid` (`anonLabel`), so they are stable within a
+  community.
+- `GeneralChat` has client-side message search (`query`/`shown`); it filters the
+  already-loaded messages, so no server support is needed.
 - After changing any file in `public/`, **bump `CACHE` in `public/sw.js`**
   (`commons-v2` → `commons-v3`, …) so installed clients drop the old shell. The
   worker is network-first now, so the bump mainly guarantees eviction.
