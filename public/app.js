@@ -1,4 +1,4 @@
-const { useState, useEffect, useRef, useCallback } = React;
+const { useState, useEffect, useLayoutEffect, useRef, useCallback } = React;
 const {
   Users,
   MapPin,
@@ -60,6 +60,7 @@ const slist = async (prefix) => {
 const auth = (s, extra) => ({ key: s.key, sessionId: s.sessionId, ...extra });
 const messageSend = (s, gid, text, anon, replyTo) => api.post("/api/message/send", auth(s, { gid, text, anon, replyTo }));
 const messageDelete = (s, gid, msgKey) => api.post("/api/message/delete", auth(s, { gid, msgKey }));
+const messageReact = (s, gid, msgKey, emoji) => api.post("/api/message/react", auth(s, { gid, msgKey, emoji }));
 const messageSearch = (s, gid, q) => api.post("/api/message/search", auth(s, { gid, q }));
 const postCreate = (s, gid, title, text, anon) => api.post("/api/post/create", auth(s, { gid, title, text, anon }));
 const postDelete = (s, gid, postKey) => api.post("/api/post/delete", auth(s, { gid, postKey }));
@@ -74,16 +75,22 @@ const slistValues = async (prefix, since) => {
 const roomCache = /* @__PURE__ */ new Map();
 const roomFullAt = /* @__PURE__ */ new Map();
 const ROOM_FULL_MS = 2e4;
-const sigOf = (list) => list && list.length ? list.length + ":" + list[0]._key + ":" + list[list.length - 1]._key : "0";
+const sigOf = (list) => {
+  if (!list || !list.length) return "0";
+  let edits = 0;
+  for (const m of list) edits = (edits * 31 + (m.updatedAt || 0)) % 2147483647;
+  return list.length + ":" + list[0]._key + ":" + list[list.length - 1]._key + ":" + edits;
+};
 const mergeItems = (base, delta) => {
   const byKey = new Map(base.map((m) => [m._key, m]));
   for (const m of delta) byKey.set(m._key, m);
   return [...byKey.values()].sort((a, b) => a.ts - b.ts);
 };
+const roomCursor = (list) => list.reduce((mx, m) => Math.max(mx, m.ts || 0, m.updatedAt || 0), 0);
 async function syncRoom(prefix, forceFull) {
   const cached = roomCache.get(prefix) || [];
   const full = forceFull || !cached.length || Date.now() - (roomFullAt.get(prefix) || 0) > ROOM_FULL_MS;
-  const fetched = await slistValues(prefix, full ? 0 : cached[cached.length - 1].ts);
+  const fetched = await slistValues(prefix, full ? 0 : roomCursor(cached));
   const next = (full ? fetched : mergeItems(cached, fetched)).sort((a, b) => a.ts - b.ts);
   roomCache.set(prefix, next);
   if (full) roomFullAt.set(prefix, Date.now());
@@ -548,6 +555,9 @@ function useMutes(gid, meKey) {
   return [mutes, toggle];
 }
 const EMOJI = ["\u{1F600}", "\u{1F604}", "\u{1F602}", "\u{1F979}", "\u{1F60A}", "\u{1F60D}", "\u{1F60E}", "\u{1F914}", "\u{1F605}", "\u{1F609}", "\u{1F643}", "\u{1F634}", "\u{1F622}", "\u{1F62D}", "\u{1F621}", "\u{1F92F}", "\u{1F44D}", "\u{1F44E}", "\u{1F44F}", "\u{1F64C}", "\u{1F64F}", "\u{1F4AA}", "\u{1F91D}", "\u{1F44B}", "\u270C\uFE0F", "\u{1F91E}", "\u2764\uFE0F", "\u{1F9E1}", "\u{1F49A}", "\u{1F499}", "\u{1F525}", "\u2728", "\u{1F389}", "\u{1F382}", "\u2615", "\u{1F355}", "\u26BD", "\u{1F3AE}", "\u{1F3B5}", "\u{1F4F7}", "\u2705", "\u274C", "\u26A0\uFE0F", "\u{1F3AF}", "\u{1F4A1}", "\u{1F680}", "\u{1F327}\uFE0F", "\u{1F31E}"];
+const REACTIONS = ["\u{1F44D}", "\u{1F44E}", "\u2764\uFE0F", "\u{1F525}", "\u{1F4AF}", "\u{1F602}", "\u{1F62C}", "\u{1F921}", "\u{1F928}", "\u{1F914}", "\u{1F440}", "\u{1FAE1}", "\u{1FAE0}", "\u{1F60D}", "\u{1F92F}", "\u{1F621}", "\u{1F974}", "\u{1F91D}", "\u{1F4AA}"];
+const QUICK_REACTIONS = REACTIONS.slice(0, 5);
+const MORE_REACTIONS = REACTIONS.slice(5);
 function Composer({ me, onSend, placeholder }) {
   const [text, setText] = useState("");
   const [anonOverride, setAnonOverride] = useState(null);
@@ -595,37 +605,53 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
   const [jumpTo, setJumpTo] = useState(null);
   const [anchor, setAnchor] = useState(null);
   const [atBottom, setAtBottom] = useState(true);
+  const [menuUp, setMenuUp] = useState(false);
   const endRef = useRef(null);
   const feedRef = useRef(null);
   const openedRef = useRef(false);
+  const atBottomRef = useRef(true);
   const [openSeen] = useState(() => getSeen(group.id, session.key) || me && me.joinedAt || 0);
-  useEffect(() => {
+  const jumpToBottom = () => {
+    setAnchor(null);
+    atBottomRef.current = true;
+    setAtBottom(true);
+    endRef.current && endRef.current.scrollIntoView({ behavior: "smooth" });
+  };
+  useLayoutEffect(() => {
     if (!items.length) return;
     if (!openedRef.current) {
       openedRef.current = true;
       const firstUnseen = items.find((m) => !m.system && m.author !== session.key && m.ts > openSeen);
-      markSeen(group.id, session.key, items[items.length - 1].ts);
       if (firstUnseen) {
         const el = document.getElementById("msg-" + firstUnseen.id);
         if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
         flash(firstUnseen.id);
         setAnchor(firstUnseen.id);
+        atBottomRef.current = false;
         setAtBottom(false);
         return;
       }
+      const feed = feedRef.current;
+      if (feed) feed.scrollTop = feed.scrollHeight;
+      return;
     }
-    if (atBottom) endRef.current && endRef.current.scrollIntoView({ behavior: "smooth" });
+    if (atBottomRef.current) endRef.current && endRef.current.scrollIntoView({ behavior: "smooth" });
   }, [items.length]);
+  useEffect(() => {
+    if (!items.length || !atBottomRef.current) return;
+    const newest = items[items.length - 1];
+    if (newest && newest.ts > (getSeen(group.id, session.key) || 0)) markSeen(group.id, session.key, newest.ts);
+    setAnchor(null);
+  }, [items.length, atBottom]);
   const onFeedScroll = () => {
     const el = feedRef.current;
-    if (el) setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 60);
+    if (!el) return;
+    const bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    atBottomRef.current = bottom;
+    setAtBottom(bottom);
+    if (bottom) setAnchor(null);
   };
-  const jumpToBottom = () => {
-    setAnchor(null);
-    setAtBottom(true);
-    endRef.current && endRef.current.scrollIntoView({ behavior: "smooth" });
-  };
-  const showDown = !!anchor || !atBottom;
+  const showDown = !atBottom;
   useEffect(() => {
     const close = () => setMenuFor(null);
     document.addEventListener("click", close);
@@ -718,6 +744,17 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
     const next = cur.filter((m) => m._key !== key);
     return next.length === cur.length ? null : next;
   }), [mutate]);
+  const replaceLocal = useCallback((key, item) => mutate((cur) => {
+    const i = cur.findIndex((m) => m._key === key);
+    if (i < 0) return null;
+    const next = cur.slice();
+    next[i] = item;
+    return next;
+  }), [mutate]);
+  const react = async (m, emoji) => {
+    const r = await messageReact(session, group.id, m._key, emoji);
+    if (r && r.ok && r.message) replaceLocal(m._key, { ...r.message, _key: m._key });
+  };
   const postMessage = async (text, anon, parent) => {
     const r = await messageSend(session, group.id, text, anon, parent ? { key: parent._key } : null);
     if (r && r.ok && r.message) addLocal({ ...r.message, _key: r.key });
@@ -738,6 +775,22 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
     if (onGroupChange) onGroupChange();
   };
   const openThread = (m) => setThreadRoot(rootOf(m));
+  const toggleMenu = (m, e) => {
+    e.stopPropagation();
+    if (menuFor === m.id) {
+      setMenuFor(null);
+      return;
+    }
+    const bubble = e.currentTarget.parentElement && e.currentTarget.parentElement.parentElement;
+    const feed = feedRef.current;
+    let up = false;
+    if (bubble && feed) {
+      const br = bubble.getBoundingClientRect(), fr = feed.getBoundingClientRect();
+      up = br.bottom + 330 > fr.bottom;
+    }
+    setMenuUp(up);
+    setMenuFor(m.id);
+  };
   const pinText = (pin) => {
     const m = byKey.get(pin.key);
     return m ? `${senderLabel(m)}: ${excerptOf(m.text)}` : "Deleted message";
@@ -761,10 +814,7 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
     }
     const root = rootOf(m);
     const hasThread = !!root && descendants(root._key).length > 0;
-    return /* @__PURE__ */ React.createElement("div", { key: m.id, id: "msg-" + m.id, style: { ...S.bubbleRow, justifyContent: mine ? "flex-end" : "flex-start", ...menuFor === m.id ? S.bubbleRowActive : {} }, className: "reveal" }, /* @__PURE__ */ React.createElement("div", { style: { ...S.bubble, ...mine ? S.bubbleMine : {}, ...highlight === m.id ? S.bubbleFlash : {} } }, /* @__PURE__ */ React.createElement("div", { style: S.bubbleHead }, /* @__PURE__ */ React.createElement("span", { style: { color: SENDER, fontWeight: 600 } }, m.anon && /* @__PURE__ */ React.createElement(EyeOff, { size: 11, style: { verticalAlign: -1, marginRight: 3 } }), senderLabel(m)), pinned && /* @__PURE__ */ React.createElement(Pin, { size: 11, style: { color: ACCENT, flexShrink: 0 } }), /* @__PURE__ */ React.createElement("button", { style: S.miniDel, title: "Message options", onClick: (e) => {
-      e.stopPropagation();
-      setMenuFor((v) => v === m.id ? null : m.id);
-    } }, /* @__PURE__ */ React.createElement(MoreVertical, { size: 14 }))), menuFor === m.id && /* @__PURE__ */ React.createElement(
+    return /* @__PURE__ */ React.createElement("div", { key: m.id, id: "msg-" + m.id, style: { ...S.bubbleRow, justifyContent: mine ? "flex-end" : "flex-start", ...menuFor === m.id ? S.bubbleRowActive : {} }, className: "reveal" }, /* @__PURE__ */ React.createElement("div", { style: { ...S.bubble, ...mine ? S.bubbleMine : {}, ...highlight === m.id ? S.bubbleFlash : {} } }, /* @__PURE__ */ React.createElement("div", { style: S.bubbleHead }, /* @__PURE__ */ React.createElement("span", { style: { color: SENDER, fontWeight: 600 } }, m.anon && /* @__PURE__ */ React.createElement(EyeOff, { size: 11, style: { verticalAlign: -1, marginRight: 3 } }), senderLabel(m)), pinned && /* @__PURE__ */ React.createElement(Pin, { size: 11, style: { color: ACCENT, flexShrink: 0 } }), /* @__PURE__ */ React.createElement("button", { style: S.miniDel, title: "Message options", onClick: (e) => toggleMenu(m, e) }, /* @__PURE__ */ React.createElement(MoreVertical, { size: 14 }))), menuFor === m.id && /* @__PURE__ */ React.createElement(
       MsgMenu,
       {
         mine,
@@ -772,17 +822,20 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
         hasThread,
         muted: isMuted,
         pinned,
+        menuUp,
         onClose: () => setMenuFor(null),
         onReply: () => setReplyTo(m),
         onThread: () => openThread(m),
         onToggleMute: () => onToggleMute(m.author),
         onTogglePin: () => togglePin(m),
-        onDelete: () => del(m)
+        onDelete: () => del(m),
+        onReact: (emoji) => react(m, emoji)
       }
-    ), m.replyTo && /* @__PURE__ */ React.createElement(ReplyPreview, { replyTo: m.replyTo, byKey, mutedSet, revealed, onReveal: reveal }), /* @__PURE__ */ React.createElement("div", null, m.text), /* @__PURE__ */ React.createElement("div", { "data-role": "msg-stamp", style: S.stamp }, fmtStamp(m.ts))));
+    ), m.replyTo && /* @__PURE__ */ React.createElement(ReplyPreview, { replyTo: m.replyTo, byKey, mutedSet, revealed, onReveal: reveal }), /* @__PURE__ */ React.createElement("div", null, m.text), /* @__PURE__ */ React.createElement(Reactions, { msg: m, meKey: session.key, onToggle: (emoji) => react(m, emoji) }), /* @__PURE__ */ React.createElement("div", { "data-role": "msg-stamp", style: S.stamp }, fmtStamp(m.ts))));
   }), /* @__PURE__ */ React.createElement("div", { ref: endRef })), showDown && /* @__PURE__ */ React.createElement("button", { "data-role": "scroll-down", title: "Jump to the newest messages", style: S.scrollDown, onClick: jumpToBottom }, /* @__PURE__ */ React.createElement(ChevronDown, { size: 20 })), replyTo && /* @__PURE__ */ React.createElement("div", { style: S.replyBanner }, /* @__PURE__ */ React.createElement(CornerUpLeft, { size: 14, style: { flexShrink: 0, color: ACCENT } }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: S.replyBannerName }, "Replying to ", senderLabel(replyTo) || "message"), /* @__PURE__ */ React.createElement("div", { style: S.replyBannerText }, excerptOf(replyTo.text))), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Cancel reply", onClick: () => setReplyTo(null) }, /* @__PURE__ */ React.createElement(X, { size: 16 }))), /* @__PURE__ */ React.createElement(Composer, { me, onSend: send, placeholder: "Message the whole community\u2026" }), threadRoot && /* @__PURE__ */ React.createElement(ThreadModal, { root: threadRoot, items, byKey, me, onClose: () => setThreadRoot(null), onReply: (t, a) => postMessage(t, a, threadRoot) }));
 }
-function MsgMenu({ mine, isAdmin, hasThread, muted, pinned, onClose, onReply, onThread, onToggleMute, onTogglePin, onDelete }) {
+function MsgMenu({ mine, isAdmin, hasThread, muted, pinned, menuUp, onClose, onReply, onThread, onToggleMute, onTogglePin, onDelete, onReact }) {
+  const [expanded, setExpanded] = useState(false);
   const item = (icon, label, onClick, danger) => /* @__PURE__ */ React.createElement(
     "button",
     {
@@ -797,7 +850,52 @@ function MsgMenu({ mine, isAdmin, hasThread, muted, pinned, onClose, onReply, on
     icon,
     /* @__PURE__ */ React.createElement("span", null, label)
   );
-  return /* @__PURE__ */ React.createElement("div", { "data-role": "msg-menu", style: { ...S.menu, ...mine ? S.menuMine : S.menuTheirs }, onClick: (e) => e.stopPropagation() }, item(/* @__PURE__ */ React.createElement(CornerUpLeft, { size: 15 }), "Reply", onReply), hasThread && item(/* @__PURE__ */ React.createElement(MessageSquare, { size: 15 }), "View message thread", onThread), isAdmin && item(pinned ? /* @__PURE__ */ React.createElement(PinOff, { size: 15 }) : /* @__PURE__ */ React.createElement(Pin, { size: 15 }), pinned ? "Unpin message" : "Pin message", onTogglePin), !mine && item(muted ? /* @__PURE__ */ React.createElement(BellOff, { size: 15 }) : /* @__PURE__ */ React.createElement(Bell, { size: 15 }), muted ? "Unmute user" : "Mute user", onToggleMute), (mine || isAdmin) && item(/* @__PURE__ */ React.createElement(Trash2, { size: 15 }), "Delete message", onDelete, true));
+  const emojiBtn = (emoji) => /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      key: emoji,
+      "data-role": "react",
+      title: `React ${emoji}`,
+      style: S.reactBtn,
+      onClick: (e) => {
+        e.stopPropagation();
+        onReact(emoji);
+      }
+    },
+    emoji
+  );
+  return /* @__PURE__ */ React.createElement("div", { "data-role": "msg-menu", style: { ...S.menuWrap, ...mine ? S.menuMine : S.menuTheirs, ...menuUp ? S.menuUp : {} }, onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ React.createElement("div", { style: S.reactBar }, QUICK_REACTIONS.map(emojiBtn), /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      "data-role": "react-more",
+      title: expanded ? "Fewer reactions" : "More reactions",
+      style: S.reactMore,
+      onClick: (e) => {
+        e.stopPropagation();
+        setExpanded((v) => !v);
+      }
+    },
+    /* @__PURE__ */ React.createElement(ChevronDown, { size: 17, style: { transform: expanded ? "rotate(180deg)" : "none" } })
+  )), expanded && /* @__PURE__ */ React.createElement("div", { "data-role": "react-more-panel", style: S.reactMorePanel }, MORE_REACTIONS.map(emojiBtn)), /* @__PURE__ */ React.createElement("div", { style: S.menu }, item(/* @__PURE__ */ React.createElement(CornerUpLeft, { size: 15 }), "Reply", onReply), hasThread && item(/* @__PURE__ */ React.createElement(MessageSquare, { size: 15 }), "View message thread", onThread), isAdmin && item(pinned ? /* @__PURE__ */ React.createElement(PinOff, { size: 15 }) : /* @__PURE__ */ React.createElement(Pin, { size: 15 }), pinned ? "Unpin message" : "Pin message", onTogglePin), !mine && item(muted ? /* @__PURE__ */ React.createElement(BellOff, { size: 15 }) : /* @__PURE__ */ React.createElement(Bell, { size: 15 }), muted ? "Unmute user" : "Mute user", onToggleMute), (mine || isAdmin) && item(/* @__PURE__ */ React.createElement(Trash2, { size: 15 }), "Delete message", onDelete, true)));
+}
+function Reactions({ msg, meKey, onToggle }) {
+  const shown = msg.reactions && typeof msg.reactions === "object" ? Object.entries(msg.reactions).filter(([, who]) => Array.isArray(who) && who.length) : [];
+  if (!shown.length) return null;
+  return /* @__PURE__ */ React.createElement("div", { style: S.reactionRow }, shown.map(([emoji, who]) => /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      key: emoji,
+      "data-role": "reaction",
+      title: `React ${emoji}`,
+      style: { ...S.reactionChip, ...who.includes(meKey) ? S.reactionChipMine : {} },
+      onClick: (e) => {
+        e.stopPropagation();
+        onToggle(emoji);
+      }
+    },
+    emoji,
+    /* @__PURE__ */ React.createElement("span", { style: S.reactionCount }, who.length)
+  )));
 }
 function ReplyPreview({ replyTo, byKey, mutedSet, revealed, onReveal }) {
   const parent = byKey.get(replyTo.key);
@@ -1002,7 +1100,20 @@ const S = {
   stamp: { fontSize: 10, color: MUTED, textAlign: "right", marginTop: 3, letterSpacing: 0.2 },
   systemMsg: { alignSelf: "center", fontSize: 12, color: MUTED, background: PANEL2, borderRadius: 20, padding: "4px 12px", margin: "2px 0" },
   miniDel: { background: "transparent", border: "none", color: "#6b7a85", cursor: "pointer", padding: 2, display: "flex", marginLeft: "auto" },
-  menu: { position: "absolute", top: 24, zIndex: 30, minWidth: 178, background: "#0f1620", border: `1px solid ${LINE}`, borderRadius: 12, padding: 4, boxShadow: "0 12px 32px rgba(0,0,0,.55)" },
+  // The wrapper positions the menu (quick reactions + items) and flips it above
+  // the bubble near the bottom of the feed, where a downward menu would be
+  // clipped by the feed's edge and covered by the composer.
+  menuWrap: { position: "absolute", top: 24, zIndex: 30, minWidth: 178, display: "flex", flexDirection: "column", gap: 4 },
+  menuUp: { top: "auto", bottom: 24 },
+  menu: { background: "#0f1620", border: `1px solid ${LINE}`, borderRadius: 12, padding: 4, boxShadow: "0 12px 32px rgba(0,0,0,.55)" },
+  reactBar: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1, background: "#0f1620", border: `1px solid ${LINE}`, borderRadius: 12, padding: "3px 5px", boxShadow: "0 12px 32px rgba(0,0,0,.55)" },
+  reactBtn: { background: "transparent", border: "none", cursor: "pointer", fontSize: 19, lineHeight: 1, padding: "3px 4px", borderRadius: 8, fontFamily: "inherit" },
+  reactMore: { display: "flex", alignItems: "center", justifyContent: "center", background: "transparent", border: "none", color: MUTED, cursor: "pointer", padding: "3px 4px", borderRadius: 8 },
+  reactMorePanel: { display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 1, background: "#0f1620", border: `1px solid ${LINE}`, borderRadius: 12, padding: 4, boxShadow: "0 12px 32px rgba(0,0,0,.55)" },
+  reactionRow: { display: "flex", flexWrap: "wrap", gap: 4, marginTop: 5 },
+  reactionChip: { display: "inline-flex", alignItems: "center", gap: 4, background: "rgba(255,255,255,.07)", border: `1px solid ${LINE}`, borderRadius: 20, padding: "1px 8px", fontSize: 13, lineHeight: 1.5, cursor: "pointer", fontFamily: "inherit", color: TEXT },
+  reactionChipMine: { borderColor: ACCENT, background: "rgba(45,212,191,.15)" },
+  reactionCount: { fontSize: 11, color: MUTED, fontWeight: 700 },
   // Anchor the menu to whichever edge the bubble is aligned to, so it always
   // grows inward. A short left-aligned message leaves almost no room to its
   // left, and a right-anchored 178px menu would run off the screen's left edge.

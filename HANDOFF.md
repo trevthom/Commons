@@ -61,7 +61,7 @@ with `freebuff-preview start`.
 | --- | --- |
 | `account:<16-char key>` | `{ key, createdAt, sessionId }` — **the login credential itself** |
 | `group:<id>` | `{ id, name, createdAt, ownerKey, admins[], members{key:{username,joinedAt,lastNameChange}}, usernames{lowercased→key}, banned[], invite, inviteOnce, pins[] }` |
-| `msg:<gid>:general:<ts>:<uid>` | `{ id, ts, text, anon, author, authorName, gid, replyTo? }` (or `{ system:true, text }`) |
+| `msg:<gid>:general:<ts>:<uid>` | `{ id, ts, text, anon, author, authorName, gid, replyTo?, reactions?, updatedAt? }` (or `{ system:true, text }`) |
 | `post:<gid>:<ts>:<uid>` | `{ id, ts, title, text, anon, author, authorName, gid, replies[] }` |
 
 Accounts are anonymous login keys; there is no email/password and no recovery.
@@ -106,6 +106,7 @@ Content — authenticated; **the server sets `author`/`authorName` from the sess
 
 - `POST /api/message/send` `{ key, sessionId, gid, text, anon, replyTo? }` → `{ ok, key, message }`
 - `POST /api/message/delete` `{ key, sessionId, gid, msgKey }` — author or admin
+- `POST /api/message/react` `{ key, sessionId, gid, msgKey, emoji }` → `{ ok, key, message }` — any member; toggles the caller's reaction, only accepts the fixed `REACTIONS` set, and bumps `updatedAt`
 - `POST /api/message/search` `{ key, sessionId, gid, q }` → `{ ok, results[], total }` — scans the whole history server-side
 - `POST /api/post/create` `{ key, sessionId, gid, title, text, anon }` → `{ ok, key, post }`
 - `POST /api/post/delete` `{ key, sessionId, gid, postKey }` — author or admin
@@ -116,8 +117,9 @@ Reads — open; a group id or invite is the capability:
 
 - `GET  /api/get?key=` → `{ key, value }` or `null`
 - `GET  /api/mget?prefix=&since=<ms>` → `{ prefix, items: [[key, value], …] }`
-  (batch read, used by all polling; `since` keeps only values whose numeric `ts`
-  is newer, so an idle poll transfers almost nothing. Values without a `ts` —
+  (batch read, used by all polling; `since` keeps only values whose newest stamp
+  — `ts` or a later `updatedAt` edit — is newer, so an idle poll transfers almost
+  nothing while reactions still arrive promptly. Values with neither stamp —
   group documents — are never filtered.)
 - `GET  /api/list?prefix=` → `{ keys }`
 - Any other `/api/…` path → JSON `404` (it must never fall through to the static handler)
@@ -161,10 +163,12 @@ Reads — open; a group id or invite is the capability:
   community list's poll warms a room's history before it is opened, so the room
   paints instantly, and the room's polls then ask the server only for messages
   newer than the newest one held (`since`), with a full refresh every 20 s to
-  reconcile deletions. `useItems` skips `setItems` when the list signature
-  (`sigOf`: length + first/last key) is unchanged, so an idle room re-renders
-  nothing. Sends/deletes update the cache immediately (`mutate`); the full
-  reload that follows reconciles it with the server.
+  reconcile deletions. The delta cursor (`roomCursor`) is the newest `ts` or
+  `updatedAt` in the cache, so a reaction on an old message is fetched too.
+  `useItems` skips `setItems` when the list signature (`sigOf`: length +
+  first/last key + a hash of `updatedAt`) is unchanged, so an idle room
+  re-renders nothing. Sends/deletes/reactions update the cache immediately
+  (`mutate`); the full reload that follows reconciles it with the server.
 - Long rooms and forums mount only their newest slice (`WINDOW` = 150 messages,
   40 posts; `data-role="show-earlier"` reveals more), so opening a room never
   renders the whole history at once. Reply previews, threads and search still
@@ -215,17 +219,34 @@ Reads — open; a group id or invite is the capability:
   community card.
 - Opening a room lands on the **first unseen message**: `GeneralChat` freezes
   the read mark for the visit (`openSeen`), scrolls to the first message from
-  someone else newer than it, flashes it, marks the newest message seen, and
-  exposes the anchor as `data-unread-anchor` on the feed. From then on new
-  messages only auto-scroll when the reader is already at the bottom
-  (`atBottom` from the feed's `onScroll`). The floating arrow
-  (`data-role="scroll-down"`, `S.scrollDown`) appears while an anchor or unseen
-  content exists and jumps back to the newest messages.
+  someone else newer than it, flashes it, and exposes the anchor as
+  `data-unread-anchor` on the feed. A room with **nothing unseen** (returning
+  from the Forum, reopening a read room) instead sets `scrollTop` in a
+  `useLayoutEffect` — the newest message, instantly, with no flash of the top.
+- The read mark follows the newest message **only while the reader is at the
+  bottom** (`atBottomRef`, kept in sync by the feed's `onScroll`, `jumpToBottom`
+  and the opening layout effect) — watching the newest message is what marks it
+  read, clears the anchor and clears the community unread badge. New messages
+  auto-scroll only when the reader is already at the bottom. The floating arrow
+  (`data-role="scroll-down"`, `S.scrollDown`, `showDown = !atBottom`) therefore
+  disappears the moment the newest message is in view, including after scrolling
+  down by hand.
 - Every message ends with a Telegram-style timestamp in its bottom-right corner
   (`data-role="msg-stamp"`, `S.stamp`): `fmtStamp` formats the date and time in
   `America/New_York` and appends a literal `EST`, as requested. General bubbles,
   forum posts and their replies, thread items and search results all use it, and
   headers never repeat the time (`fmtTime` is gone).
+- Reactions live on the message itself as `reactions: {"👍": [accountKey, …]}`;
+  the UI renders counts only (and highlights the viewer's own), but the stored
+  keys are exposed through the open read endpoints exactly like `author` already
+  is — see known issue 1. The message menu opens with a quick bar of the
+  first five (`QUICK_REACTIONS`) plus a ▼ in the sixth slot
+  (`data-role="react-more"`) that expands the remaining fourteen
+  (`data-role="react-more-panel"`, a 5-column grid). Reacting keeps the menu
+  open so several can be picked; chips under the message `text`
+  (`data-role="reaction"`, viewer's own highlighted) toggle on tap. The server
+  accepts only the fixed `REACTIONS` list — keep it in sync with the copy in
+  `src/app.src.jsx`.
 - The community list card shows only the name, the newest-message preview and
   the unread badge — role is not shown there. Inside a room the header's centre
   reads the community name, the member count (`data-role="member-count"`) and
@@ -255,8 +276,13 @@ Reads — open; a group id or invite is the capability:
   right-anchored menu runs off the screen's left edge. That is `S.menuMine`
   (`right: 4`) for own bubbles and `S.menuTheirs` (`left: 4`) for other people's,
   so the menu always grows inward.
+- `S.menuWrap` positions the whole menu (reaction bar + items). When there is
+  not enough room below the bubble (`toggleMenu` measures against the feed),
+  it gets `S.menuUp` (`top: auto; bottom: 24`) so the newest message's menu
+  opens upward instead of being clipped by the feed's edge and covered by the
+  composer.
 - After changing any file in `public/`, **bump `CACHE` in `public/sw.js`**
-  (currently `commons-v10`; go to `commons-v11`, …) so installed clients drop the
+  (currently `commons-v11`; go to `commons-v12`, …) so installed clients drop the
   old shell. The worker is network-first now, so the bump mainly guarantees
   eviction.
 

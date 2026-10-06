@@ -128,6 +128,18 @@ const newAccount = async () => (await post("/api/account/create", {})).json;
   const nothingNew = await get(`/api/mget?prefix=${encodeURIComponent(`msg:${gid}:general:`)}&since=${hist.json.items[hist.json.items.length - 1][1].ts}`);
   ok("mget?since returns nothing when the cursor is at the newest message", nothingNew.json.items.length === 0);
 
+  // --- reactions: authenticated toggle, carried by delta reads ---
+  const strangerReact = await post("/api/message/react", { key: stranger.key, sessionId: stranger.sessionId, gid, msgKey: msgKey1, emoji: "👍" });
+  ok("a non-member cannot react", strangerReact.json && strangerReact.json.error === "not-member");
+  const badEmoji = await post("/api/message/react", { key: memberKey, sessionId: memberSid, gid, msgKey: msgKey1, emoji: "🚀" });
+  ok("an emoji outside the palette is rejected", badEmoji.json && badEmoji.json.ok === false);
+  const reacted = await post("/api/message/react", { key: ownerKey, sessionId: ownerSid2, gid, msgKey: msgKey1, emoji: "🔥" });
+  ok("a member can react to a message", reacted.json && reacted.json.ok && (reacted.json.message.reactions["🔥"] || []).includes(ownerKey));
+  const afterReact = await get(`/api/mget?prefix=${encodeURIComponent(`msg:${gid}:general:`)}&since=${reacted.json.message.ts}`);
+  ok("a reacted (edited) message comes through a delta read", afterReact.json.items.some(([k]) => k === msgKey1));
+  const unreacted = await post("/api/message/react", { key: ownerKey, sessionId: ownerSid2, gid, msgKey: msgKey1, emoji: "🔥" });
+  ok("reacting again removes the reaction", unreacted.json && unreacted.json.ok && !(unreacted.json.message.reactions || {})["🔥"]);
+
   // --- search runs server-side over the whole history ---
   const search = await post("/api/message/search", { key: memberKey, sessionId: memberSid, gid, q: "🔥" });
   ok("search finds a message by emoji", search.json && search.json.ok && search.json.results.length === 1 && search.json.results[0].key === msgKey1);

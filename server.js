@@ -113,6 +113,11 @@ const sessionOk = (key, sessionId) => {
 const isAdminOf = (g, key) => !!g && (g.ownerKey === key || (g.admins || []).includes(key));
 const memberName = (g, key) => (g && g.members[key] && g.members[key].username) || null;
 
+// The reaction set the client offers; the server accepts exactly these, so the
+// store can never accumulate arbitrary keys. Keep in sync with `REACTIONS` in
+// src/app.src.jsx (the first five are the quick bar).
+const REACTIONS = ["👍", "👎", "❤️", "🔥", "💯", "😂", "😬", "🤡", "🤨", "🤔", "👀", "🫡", "🫠", "😍", "🤯", "😡", "🥴", "🤝", "💪"];
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const p = url.pathname;
@@ -348,6 +353,32 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
+  // Reacting toggles the caller's emoji on a message. Like every other write
+  // the author comes from the session, and `updatedAt` is bumped so delta
+  // polls (mget?since) hand the edited message to everyone else quickly.
+  if (p === "/api/message/react" && req.method === "POST") {
+    const body = await readBody(req);
+    const key = normKey(body.key); const sessionId = body.sessionId;
+    const gid = String(body.gid || ""); const msgKey = String(body.msgKey || ""); const emoji = String(body.emoji || "");
+    return atomic(() => {
+      if (!sessionOk(key, sessionId)) return sendJSON(res, 200, { ok: false, error: "auth" });
+      const g = store[groupKey(gid)];
+      if (!g || !g.members[key]) return sendJSON(res, 200, { ok: false, error: "not-member" });
+      if (!msgKey.startsWith(`msg:${gid}:general:`) || !store[msgKey]) return sendJSON(res, 200, { ok: false, error: "not-found" });
+      const m = store[msgKey];
+      if (m.system || !REACTIONS.includes(emoji)) return sendJSON(res, 200, { ok: false, error: "not-found" });
+      m.reactions = (m.reactions && typeof m.reactions === "object") ? m.reactions : {};
+      const who = Array.isArray(m.reactions[emoji]) ? m.reactions[emoji] : [];
+      if (who.includes(key)) m.reactions[emoji] = who.filter((k) => k !== key);
+      else m.reactions[emoji] = [...who, key];
+      if (!m.reactions[emoji].length) delete m.reactions[emoji];
+      if (!Object.keys(m.reactions).length) delete m.reactions;
+      m.updatedAt = now();
+      persist();
+      sendJSON(res, 200, { ok: true, key: msgKey, message: m });
+    });
+  }
+
   if (p === "/api/post/create" && req.method === "POST") {
     const body = await readBody(req);
     const key = normKey(body.key); const sessionId = body.sessionId; const gid = String(body.gid || "");
@@ -488,7 +519,13 @@ const server = http.createServer(async (req, res) => {
     for (const k of Object.keys(store)) {
       if (!k.startsWith(prefix) || isAccountKey(k)) continue;
       const v = store[k];
-      if (since && v && typeof v.ts === "number" && v.ts <= since) continue;
+      if (since && v) {
+        // Newest thing we know about the value: its message time, or a later
+        // edit (reactions bump `updatedAt`), so edited messages come through a
+        // delta read too. Values without either stamp are never filtered.
+        const t = Math.max(typeof v.ts === "number" ? v.ts : 0, typeof v.updatedAt === "number" ? v.updatedAt : 0);
+        if (t > 0 && t <= since) continue;
+      }
       items.push([k, v]);
     }
     return sendJSON(res, 200, { prefix, items });
