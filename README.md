@@ -27,6 +27,12 @@ Open the app in a browser, or install it as a PWA on a phone.
   tapping a result jumps to it in the chat.
 - **Emoji picker** in the composer — emoji are ordinary text, so they send
   through the same path as any message.
+- **Reactions** on any message: the ⋮ menu opens with 👍 👎 ❤️ 🔥 💯, and the ▼
+  beside them expands the rest of the palette. Counts show under the message and
+  tapping a reaction toggles yours.
+- A room you have already read opens on its **newest message**; a room with
+  unread ones opens on the first you missed, and the arrow back to the bottom
+  disappears as soon as the newest message is in view.
 - **Muting** hides that member's Forum posts and their General messages for
   *you*. If the muted person's message is part of a reply chain it stays
   collapsed behind a "Muted" placeholder you can tap to reveal.

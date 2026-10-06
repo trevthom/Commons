@@ -1,4 +1,4 @@
-const { useState, useEffect, useRef, useCallback } = React;
+const { useState, useEffect, useLayoutEffect, useRef, useCallback } = React;
 const {
   Users, MapPin, Shield, Send, Eye, EyeOff, Link2, QrCode, Search,
   X, Trash2, UserMinus, Crown, LogIn, Plus, Copy, Check, MessageSquare, ChevronLeft, Ban, Key, LogOut,
@@ -20,6 +20,7 @@ const slist = async (prefix) => { const j = await api.get("/api/list?prefix=" + 
 const auth = (s, extra) => ({ key: s.key, sessionId: s.sessionId, ...extra });
 const messageSend = (s, gid, text, anon, replyTo) => api.post("/api/message/send", auth(s, { gid, text, anon, replyTo }));
 const messageDelete = (s, gid, msgKey) => api.post("/api/message/delete", auth(s, { gid, msgKey }));
+const messageReact = (s, gid, msgKey, emoji) => api.post("/api/message/react", auth(s, { gid, msgKey, emoji }));
 const messageSearch = (s, gid, q) => api.post("/api/message/search", auth(s, { gid, q }));
 const postCreate = (s, gid, title, text, anon) => api.post("/api/post/create", auth(s, { gid, title, text, anon }));
 const postDelete = (s, gid, postKey) => api.post("/api/post/delete", auth(s, { gid, postKey }));
@@ -44,18 +45,26 @@ const slistValues = async (prefix, since) => {
 const roomCache = new Map();   // prefix -> sorted items
 const roomFullAt = new Map();  // prefix -> when the cache was last fully fetched
 const ROOM_FULL_MS = 20000;
-// Cheap identity of a list: two lists with the same shape hold the same
-// messages, so a poll that changed nothing must not re-render the room.
-const sigOf = (list) => (list && list.length ? list.length + ":" + list[0]._key + ":" + list[list.length - 1]._key : "0");
+// Cheap identity of a list: its shape plus a hash of edit times, so a poll that
+// changed nothing — not even a reaction — must not re-render the room.
+const sigOf = (list) => {
+  if (!list || !list.length) return "0";
+  let edits = 0;
+  for (const m of list) edits = (edits * 31 + (m.updatedAt || 0)) % 0x7fffffff;
+  return list.length + ":" + list[0]._key + ":" + list[list.length - 1]._key + ":" + edits;
+};
 const mergeItems = (base, delta) => {
   const byKey = new Map(base.map((m) => [m._key, m]));
   for (const m of delta) byKey.set(m._key, m);
   return [...byKey.values()].sort((a, b) => a.ts - b.ts);
 };
+// The newest thing we know about a room: the newest message or a later edit
+// (reactions bump `updatedAt`), whichever is later — the delta cursor.
+const roomCursor = (list) => list.reduce((mx, m) => Math.max(mx, m.ts || 0, m.updatedAt || 0), 0);
 async function syncRoom(prefix, forceFull) {
   const cached = roomCache.get(prefix) || [];
   const full = forceFull || !cached.length || Date.now() - (roomFullAt.get(prefix) || 0) > ROOM_FULL_MS;
-  const fetched = await slistValues(prefix, full ? 0 : cached[cached.length - 1].ts);
+  const fetched = await slistValues(prefix, full ? 0 : roomCursor(cached));
   const next = (full ? fetched : mergeItems(cached, fetched)).sort((a, b) => a.ts - b.ts);
   roomCache.set(prefix, next);
   if (full) roomFullAt.set(prefix, Date.now());
@@ -511,6 +520,13 @@ function useMutes(gid, meKey) {
 // the same authenticated send path as any other message.
 const EMOJI = ["😀","😄","😂","🥹","😊","😍","😎","🤔","😅","😉","🙃","😴","😢","😭","😡","🤯","👍","👎","👏","🙌","🙏","💪","🤝","👋","✌️","🤞","❤️","🧡","💚","💙","🔥","✨","🎉","🎂","☕","🍕","⚽","🎮","🎵","📷","✅","❌","⚠️","🎯","💡","🚀","🌧️","🌞"];
 
+// Reaction palette: the first five are the quick bar above a message's menu and
+// the ▼ in the sixth slot expands the rest. The server accepts exactly this set
+// (keep the two lists in sync — the client renders, the server validates).
+const REACTIONS = ["👍","👎","❤️","🔥","💯","😂","😬","🤡","🤨","🤔","👀","🫡","🫠","😍","🤯","😡","🥴","🤝","💪"];
+const QUICK_REACTIONS = REACTIONS.slice(0, 5);
+const MORE_REACTIONS = REACTIONS.slice(5);
+
 function Composer({ me, onSend, placeholder }) {
   const [text, setText] = useState("");
   const [anonOverride, setAnonOverride] = useState(null);
@@ -558,35 +574,60 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
   const [jumpTo, setJumpTo] = useState(null);
   const [anchor, setAnchor] = useState(null); // the first unseen message this visit opened on
   const [atBottom, setAtBottom] = useState(true);
+  const [menuUp, setMenuUp] = useState(false);
   const endRef = useRef(null);
   const feedRef = useRef(null);
   const openedRef = useRef(false);
+  // The scroll handler and the effects below agree through this ref: refs
+  // update synchronously, so a layout effect that lands on an anchor cannot be
+  // overruled by the mark-as-seen effect running in the same commit.
+  const atBottomRef = useRef(true);
   // Freeze the read mark for the visit: the room opens on the first message the
   // viewer hasn't seen, and only then does the mark narrow to the newest one.
   const [openSeen] = useState(() => getSeen(group.id, session.key) || (me && me.joinedAt) || 0);
+  const jumpToBottom = () => { setAnchor(null); atBottomRef.current = true; setAtBottom(true); endRef.current && endRef.current.scrollIntoView({ behavior: "smooth" }); };
   // Opening the room lands on the first unseen message (Telegram-style), so the
-  // reader can scroll down through what they missed. After that, new messages
-  // only follow the view when the reader is already at the bottom.
-  useEffect(() => {
+  // reader can scroll down through what they missed. A room with nothing unseen
+  // (coming back from the Forum, or reopening a room that was read) lands on the
+  // newest message instantly, with no animation and no flash of the top.
+  useLayoutEffect(() => {
     if (!items.length) return;
     if (!openedRef.current) {
       openedRef.current = true;
       const firstUnseen = items.find((m) => !m.system && m.author !== session.key && m.ts > openSeen);
-      markSeen(group.id, session.key, items[items.length - 1].ts);
       if (firstUnseen) {
         const el = document.getElementById("msg-" + firstUnseen.id);
         if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
         flash(firstUnseen.id);
         setAnchor(firstUnseen.id);
+        atBottomRef.current = false;
         setAtBottom(false);
         return;
       }
+      const feed = feedRef.current;
+      if (feed) feed.scrollTop = feed.scrollHeight;
+      return;
     }
-    if (atBottom) endRef.current && endRef.current.scrollIntoView({ behavior: "smooth" });
+    if (atBottomRef.current) endRef.current && endRef.current.scrollIntoView({ behavior: "smooth" });
   }, [items.length]);
-  const onFeedScroll = () => { const el = feedRef.current; if (el) setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 60); };
-  const jumpToBottom = () => { setAnchor(null); setAtBottom(true); endRef.current && endRef.current.scrollIntoView({ behavior: "smooth" }); };
-  const showDown = !!anchor || !atBottom;
+  // Watching the newest message is what marks it read: while the reader is at
+  // the bottom the mark follows the newest message, which is what clears the
+  // scroll-down arrow, the anchor and the community-list unread badge.
+  useEffect(() => {
+    if (!items.length || !atBottomRef.current) return;
+    const newest = items[items.length - 1];
+    if (newest && newest.ts > (getSeen(group.id, session.key) || 0)) markSeen(group.id, session.key, newest.ts);
+    setAnchor(null);
+  }, [items.length, atBottom]);
+  const onFeedScroll = () => {
+    const el = feedRef.current; if (!el) return;
+    const bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    atBottomRef.current = bottom;
+    setAtBottom(bottom);
+    if (bottom) setAnchor(null); // the newest is in view: forget the anchor
+  };
+  // The arrow only offers what the reader has not looked at yet.
+  const showDown = !atBottom;
   // A click anywhere outside an open message menu dismisses it.
   useEffect(() => {
     const close = () => setMenuFor(null);
@@ -642,6 +683,13 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
   // Show local edits immediately; the reload that follows reconciles them.
   const addLocal = useCallback((m) => mutate((cur) => (cur.some((x) => x._key === m._key) ? null : [...cur, m].sort((a, b) => a.ts - b.ts))), [mutate]);
   const dropLocal = useCallback((key) => mutate((cur) => { const next = cur.filter((m) => m._key !== key); return next.length === cur.length ? null : next; }), [mutate]);
+  const replaceLocal = useCallback((key, item) => mutate((cur) => { const i = cur.findIndex((m) => m._key === key); if (i < 0) return null; const next = cur.slice(); next[i] = item; return next; }), [mutate]);
+  // A reaction toggles for the viewer immediately; the delta polls carry it to
+  // everyone else (the server bumps the message's `updatedAt`).
+  const react = async (m, emoji) => {
+    const r = await messageReact(session, group.id, m._key, emoji);
+    if (r && r.ok && r.message) replaceLocal(m._key, { ...r.message, _key: m._key });
+  };
   const postMessage = async (text, anon, parent) => {
     const r = await messageSend(session, group.id, text, anon, parent ? { key: parent._key } : null);
     if (r && r.ok && r.message) addLocal({ ...r.message, _key: r.key });
@@ -654,6 +702,23 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
     if (onGroupChange) onGroupChange();
   };
   const openThread = (m) => setThreadRoot(rootOf(m));
+  // Open the ⋮ menu, flipping it above the bubble when there is not enough room
+  // below: the newest message sits against the composer, and a downward menu
+  // would be cut off by the feed's edge.
+  const toggleMenu = (m, e) => {
+    e.stopPropagation();
+    if (menuFor === m.id) { setMenuFor(null); return; }
+    const bubble = e.currentTarget.parentElement && e.currentTarget.parentElement.parentElement;
+    const feed = feedRef.current;
+    let up = false;
+    if (bubble && feed) {
+      const br = bubble.getBoundingClientRect(), fr = feed.getBoundingClientRect();
+      // Tall enough for the reaction bar, the items and the expanded palette.
+      up = br.bottom + 330 > fr.bottom;
+    }
+    setMenuUp(up);
+    setMenuFor(m.id);
+  };
   const pinText = (pin) => { const m = byKey.get(pin.key); return m ? `${senderLabel(m)}: ${excerptOf(m.text)}` : "Deleted message"; };
   // Render only the newest slice of a long room; the window always stretches
   // to include the first unseen message, so opening still lands on it.
@@ -713,13 +778,14 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
             <div style={S.bubbleHead}>
               <span style={{ color: SENDER, fontWeight: 600 }}>{m.anon && <EyeOff size={11} style={{ verticalAlign: -1, marginRight: 3 }} />}{senderLabel(m)}</span>
               {pinned && <Pin size={11} style={{ color: ACCENT, flexShrink: 0 }} />}
-              <button style={S.miniDel} title="Message options" onClick={(e) => { e.stopPropagation(); setMenuFor((v) => (v === m.id ? null : m.id)); }}><MoreVertical size={14} /></button>
+              <button style={S.miniDel} title="Message options" onClick={(e) => toggleMenu(m, e)}><MoreVertical size={14} /></button>
             </div>
-            {menuFor === m.id && <MsgMenu mine={mine} isAdmin={isAdmin} hasThread={hasThread} muted={isMuted} pinned={pinned}
+            {menuFor === m.id && <MsgMenu mine={mine} isAdmin={isAdmin} hasThread={hasThread} muted={isMuted} pinned={pinned} menuUp={menuUp}
               onClose={() => setMenuFor(null)} onReply={() => setReplyTo(m)} onThread={() => openThread(m)}
-              onToggleMute={() => onToggleMute(m.author)} onTogglePin={() => togglePin(m)} onDelete={() => del(m)} />}
+              onToggleMute={() => onToggleMute(m.author)} onTogglePin={() => togglePin(m)} onDelete={() => del(m)} onReact={(emoji) => react(m, emoji)} />}
             {m.replyTo && <ReplyPreview replyTo={m.replyTo} byKey={byKey} mutedSet={mutedSet} revealed={revealed} onReveal={reveal} />}
             <div>{m.text}</div>
+            <Reactions msg={m} meKey={session.key} onToggle={(emoji) => react(m, emoji)} />
             <div data-role="msg-stamp" style={S.stamp}>{fmtStamp(m.ts)}</div>
           </div>
         </div>;
@@ -740,18 +806,48 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
   </div>;
 }
 
-// The per-message menu (opened from the ⋮ button in a bubble's header).
-function MsgMenu({ mine, isAdmin, hasThread, muted, pinned, onClose, onReply, onThread, onToggleMute, onTogglePin, onDelete }) {
+// The per-message menu (opened from the ⋮ button in a bubble's header): a quick
+// reaction bar above the items, with a ▼ in the sixth slot that expands the
+// rest of the palette. Reacting keeps the menu open so several can be picked.
+function MsgMenu({ mine, isAdmin, hasThread, muted, pinned, menuUp, onClose, onReply, onThread, onToggleMute, onTogglePin, onDelete, onReact }) {
+  const [expanded, setExpanded] = useState(false);
   const item = (icon, label, onClick, danger) => (
     <button key={label} style={{ ...S.menuItem, ...(danger ? S.menuItemDanger : {}) }}
       onClick={(e) => { e.stopPropagation(); onClose(); onClick(); }}>{icon}<span>{label}</span></button>
   );
-  return <div data-role="msg-menu" style={{ ...S.menu, ...(mine ? S.menuMine : S.menuTheirs) }} onClick={(e) => e.stopPropagation()}>
-    {item(<CornerUpLeft size={15} />, "Reply", onReply)}
-    {hasThread && item(<MessageSquare size={15} />, "View message thread", onThread)}
-    {isAdmin && item(pinned ? <PinOff size={15} /> : <Pin size={15} />, pinned ? "Unpin message" : "Pin message", onTogglePin)}
-    {!mine && item(muted ? <BellOff size={15} /> : <Bell size={15} />, muted ? "Unmute user" : "Mute user", onToggleMute)}
-    {(mine || isAdmin) && item(<Trash2 size={15} />, "Delete message", onDelete, true)}
+  const emojiBtn = (emoji) => (
+    <button key={emoji} data-role="react" title={`React ${emoji}`} style={S.reactBtn}
+      onClick={(e) => { e.stopPropagation(); onReact(emoji); }}>{emoji}</button>
+  );
+  return <div data-role="msg-menu" style={{ ...S.menuWrap, ...(mine ? S.menuMine : S.menuTheirs), ...(menuUp ? S.menuUp : {}) }} onClick={(e) => e.stopPropagation()}>
+    <div style={S.reactBar}>
+      {QUICK_REACTIONS.map(emojiBtn)}
+      <button data-role="react-more" title={expanded ? "Fewer reactions" : "More reactions"} style={S.reactMore}
+        onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }}>
+        <ChevronDown size={17} style={{ transform: expanded ? "rotate(180deg)" : "none" }} />
+      </button>
+    </div>
+    {expanded && <div data-role="react-more-panel" style={S.reactMorePanel}>{MORE_REACTIONS.map(emojiBtn)}</div>}
+    <div style={S.menu}>
+      {item(<CornerUpLeft size={15} />, "Reply", onReply)}
+      {hasThread && item(<MessageSquare size={15} />, "View message thread", onThread)}
+      {isAdmin && item(pinned ? <PinOff size={15} /> : <Pin size={15} />, pinned ? "Unpin message" : "Pin message", onTogglePin)}
+      {!mine && item(muted ? <BellOff size={15} /> : <Bell size={15} />, muted ? "Unmute user" : "Mute user", onToggleMute)}
+      {(mine || isAdmin) && item(<Trash2 size={15} />, "Delete message", onDelete, true)}
+    </div>
+  </div>;
+}
+
+// Reaction chips under a message's text; tapping one toggles that reaction.
+function Reactions({ msg, meKey, onToggle }) {
+  const shown = msg.reactions && typeof msg.reactions === "object"
+    ? Object.entries(msg.reactions).filter(([, who]) => Array.isArray(who) && who.length)
+    : [];
+  if (!shown.length) return null;
+  return <div style={S.reactionRow}>
+    {shown.map(([emoji, who]) => <button key={emoji} data-role="reaction" title={`React ${emoji}`}
+      style={{ ...S.reactionChip, ...(who.includes(meKey) ? S.reactionChipMine : {}) }}
+      onClick={(e) => { e.stopPropagation(); onToggle(emoji); }}>{emoji}<span style={S.reactionCount}>{who.length}</span></button>)}
   </div>;
 }
 
@@ -1051,7 +1147,20 @@ const S = {
   stamp: { fontSize: 10, color: MUTED, textAlign: "right", marginTop: 3, letterSpacing: .2 },
   systemMsg: { alignSelf: "center", fontSize: 12, color: MUTED, background: PANEL2, borderRadius: 20, padding: "4px 12px", margin: "2px 0" },
   miniDel: { background: "transparent", border: "none", color: "#6b7a85", cursor: "pointer", padding: 2, display: "flex", marginLeft: "auto" },
-  menu: { position: "absolute", top: 24, zIndex: 30, minWidth: 178, background: "#0f1620", border: `1px solid ${LINE}`, borderRadius: 12, padding: 4, boxShadow: "0 12px 32px rgba(0,0,0,.55)" },
+  // The wrapper positions the menu (quick reactions + items) and flips it above
+  // the bubble near the bottom of the feed, where a downward menu would be
+  // clipped by the feed's edge and covered by the composer.
+  menuWrap: { position: "absolute", top: 24, zIndex: 30, minWidth: 178, display: "flex", flexDirection: "column", gap: 4 },
+  menuUp: { top: "auto", bottom: 24 },
+  menu: { background: "#0f1620", border: `1px solid ${LINE}`, borderRadius: 12, padding: 4, boxShadow: "0 12px 32px rgba(0,0,0,.55)" },
+  reactBar: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1, background: "#0f1620", border: `1px solid ${LINE}`, borderRadius: 12, padding: "3px 5px", boxShadow: "0 12px 32px rgba(0,0,0,.55)" },
+  reactBtn: { background: "transparent", border: "none", cursor: "pointer", fontSize: 19, lineHeight: 1, padding: "3px 4px", borderRadius: 8, fontFamily: "inherit" },
+  reactMore: { display: "flex", alignItems: "center", justifyContent: "center", background: "transparent", border: "none", color: MUTED, cursor: "pointer", padding: "3px 4px", borderRadius: 8 },
+  reactMorePanel: { display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 1, background: "#0f1620", border: `1px solid ${LINE}`, borderRadius: 12, padding: 4, boxShadow: "0 12px 32px rgba(0,0,0,.55)" },
+  reactionRow: { display: "flex", flexWrap: "wrap", gap: 4, marginTop: 5 },
+  reactionChip: { display: "inline-flex", alignItems: "center", gap: 4, background: "rgba(255,255,255,.07)", border: `1px solid ${LINE}`, borderRadius: 20, padding: "1px 8px", fontSize: 13, lineHeight: 1.5, cursor: "pointer", fontFamily: "inherit", color: TEXT },
+  reactionChipMine: { borderColor: ACCENT, background: "rgba(45,212,191,.15)" },
+  reactionCount: { fontSize: 11, color: MUTED, fontWeight: 700 },
   // Anchor the menu to whichever edge the bubble is aligned to, so it always
   // grows inward. A short left-aligned message leaves almost no room to its
   // left, and a right-anchored 178px menu would run off the screen's left edge.

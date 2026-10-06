@@ -192,6 +192,26 @@ check("the menu hides Mute on your own message", !/Mute user/.test(screen()));
 check("the menu offers Delete on your own message", /Delete message/.test(screen()));
 check("no thread option before any replies exist", !/View message thread/.test(screen()));
 
+// --- reactions: five quick buttons and a ▼ that expands the rest ---
+let menuEl = document.querySelector('[data-role="msg-menu"]');
+check("the menu offers five quick reactions", !!menuEl && menuEl.querySelectorAll('[data-role="react"]').length === 5,
+  menuEl ? String(menuEl.querySelectorAll('[data-role="react"]').length) : "no menu");
+const moreBtn = menuEl && menuEl.querySelector('[data-role="react-more"]');
+check("the sixth slot expands more reactions", !!moreBtn && !menuEl.querySelector('[data-role="react-more-panel"]'));
+moreBtn.click();
+await sleep(150);
+const morePanel = menuEl.querySelector('[data-role="react-more-panel"]');
+check("the expander reveals the remaining reactions", !!morePanel && morePanel.querySelectorAll('[data-role="react"]').length === 14,
+  morePanel ? String(morePanel.querySelectorAll('[data-role="react"]').length) : "no panel");
+menuEl.querySelector('[data-role="react"]').click(); // the first: 👍
+await sleep(700);
+const chip = document.querySelector('[data-role="reaction"]');
+check("reacting adds a chip with a count of 1", !!chip && /👍/.test(chip.textContent) && chip.textContent.replace(/\D/g, "") === "1", chip ? chip.textContent : "no chip");
+menuEl = document.querySelector('[data-role="msg-menu"]');
+menuEl.querySelector('[data-role="react"]').click(); // 👍 again toggles it off
+await sleep(700);
+check("reacting with the same emoji again removes it", !document.querySelector('[data-role="reaction"]'));
+
 // --- the open menu must not be covered by another message ---
 // Every row animates in via `.reveal`, which makes each row its own stacking
 // context and would trap the menu's z-index under the row below it. The row
@@ -305,9 +325,10 @@ const expectedStamp = new Date(bananaMsg.ts).toLocaleDateString("en-US", { ...ny
 check("the timestamp is that message's Eastern time", stampText === expectedStamp, `${stampText} vs ${expectedStamp}`);
 
 // --- unread inbox: count, preview, and the jump to the first unseen message ---
-// The viewer opened the room before Bob wrote anything, so his two messages are
-// still unread. Leaving to the home screen must surface them, and re-opening
-// must land on the first one.
+// Messages that arrive while the reader watches the bottom are read (the mark
+// follows the newest message there), so unread means "arrived while the viewer
+// was elsewhere". Leave to the home screen first, then let Bob post, and the
+// list must surface it; re-opening lands on it.
 document.querySelector('[title="Back to your communities"]').click();
 await sleep(800);
 check("the home screen rendered again", /Your communities/.test(screen()));
@@ -315,18 +336,23 @@ const card = document.querySelector('[data-role="group-card"]');
 check("the community card is present", !!card);
 check("the community card does not show your role", !!card && card.querySelectorAll("svg").length === 0 && !/owner|admin/i.test(card.textContent), card ? card.textContent : "no card");
 check("the community card does not show the member count", !!card && !/member/i.test(card.textContent), card ? card.textContent : "no card");
-const badge = card && card.querySelector('[data-role="unread-badge"]');
-check("the card shows the unread count", !!badge && badge.textContent.trim() === "2", badge ? badge.textContent : "no badge");
-check("the card previews the newest message", !!card && /bob solo/.test(card.textContent), card ? card.textContent : "");
-check("the preview names who wrote it", !!card && /bob: bob solo/.test(card.textContent.replace(/\s+/g, " ")), card ? card.textContent : "");
-card.click();
+check("messages watched at the bottom leave no unread badge", !!card && !card.querySelector('[data-role="unread-badge"]'), card ? card.textContent : "no card");
+// Bob posts while the viewer is on the home screen: that one is unread.
+await apiPost("/api/message/send", { key: bob.key, sessionId: bob.sessionId, gid: testGroup.id, text: "bob solo later" });
+await sleep(4600);
+const cardWarm = document.querySelector('[data-role="group-card"]');
+const badge = cardWarm && cardWarm.querySelector('[data-role="unread-badge"]');
+check("the card shows the unread count", !!badge && badge.textContent.trim() === "1", badge ? badge.textContent : "no badge");
+check("the card previews the newest message", !!cardWarm && /bob solo later/.test(cardWarm.textContent), cardWarm ? cardWarm.textContent : "");
+check("the preview names who wrote it", !!cardWarm && /bob: bob solo later/.test(cardWarm.textContent.replace(/\s+/g, " ")), cardWarm ? cardWarm.textContent : "");
+cardWarm.click();
 await sleep(1500);
 const feed = document.querySelector('[data-role="feed"]');
 check("the room opened on its message feed", !!feed);
 const anchorId = feed && feed.getAttribute("data-unread-anchor");
-const firstUnseen = [...document.querySelectorAll('#root div[id^="msg-"]')].find((d) => (d.textContent || "").includes("from bob"));
+const firstUnseen = [...document.querySelectorAll('#root div[id^="msg-"]')].find((d) => (d.textContent || "").includes("bob solo later"));
 check("the room jumped to the first unseen message", !!firstUnseen && anchorId === firstUnseen.id.replace(/^msg-/, ""), `anchor=${anchorId}`);
-check("the anchored message is Bob's earlier one", !!firstUnseen && /from bob/.test(firstUnseen.textContent) && !/bob solo/.test(firstUnseen.textContent));
+check("the anchored message is the one Bob just sent", !!firstUnseen && /bob solo later/.test(firstUnseen.textContent));
 const downBtn = document.querySelector('[data-role="scroll-down"]');
 check("an arrow offers to jump to the newest messages", !!downBtn);
 downBtn.click();
@@ -337,9 +363,12 @@ document.querySelector('[title="Back to your communities"]').click();
 await sleep(900);
 const card2 = document.querySelector('[data-role="group-card"]');
 check("reading the room cleared the unread badge", !!card2 && !card2.querySelector('[data-role="unread-badge"]'), card2 ? card2.textContent : "no card");
+// Re-opening a room whose newest message has been read must land on it.
 card2.click();
 await sleep(1500);
-check("the room is back after the second visit", !!document.querySelector('[data-role="feed"]'));
+const feedAgain = document.querySelector('[data-role="feed"]');
+check("the room is back after the second visit", !!feedAgain);
+check("a fully read room reopens at the newest message", !!feedAgain && !feedAgain.getAttribute("data-unread-anchor") && !document.querySelector('[data-role="scroll-down"]'));
 
 // --- the menu must never hang off the screen edge ---
 // The menu is at least 178px wide, and a short left-aligned message leaves
@@ -468,6 +497,14 @@ await sleep(1600);
 const myPost = [...document.querySelectorAll("#root .reveal")].find((d) => (d.textContent || "").includes("forum stamp check"));
 const myPostStamp = myPost && myPost.querySelector('[data-role="msg-stamp"]');
 check("a forum post carries the Eastern timestamp", !!myPostStamp && /EST$/.test((myPostStamp.textContent || "").trim()), myPostStamp ? myPostStamp.textContent : "no stamp");
+
+// --- coming back from the Forum must land on the newest message ---
+check("switched back to General", click("General"));
+await sleep(900);
+const backFeed = document.querySelector('[data-role="feed"]');
+check("returning from the Forum lands at the newest message",
+  !!backFeed && !backFeed.getAttribute("data-unread-anchor") && !document.querySelector('[data-role="scroll-down"]'),
+  backFeed ? `anchor=${backFeed.getAttribute("data-unread-anchor")}` : "no feed");
 
 // --- relaunching the installed app restores the same session ---
 // localStorage survives a relaunch, so a second page load seeded with what the
