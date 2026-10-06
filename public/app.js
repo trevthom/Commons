@@ -584,7 +584,7 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
     }
     const root = rootOf(m);
     const hasThread = !!root && descendants(root._key).length > 0;
-    return /* @__PURE__ */ React.createElement("div", { key: m.id, id: "msg-" + m.id, style: { ...S.bubbleRow, justifyContent: mine ? "flex-end" : "flex-start" }, className: "reveal" }, /* @__PURE__ */ React.createElement("div", { style: { ...S.bubble, ...mine ? S.bubbleMine : {}, ...highlight === m.id ? S.bubbleFlash : {} } }, /* @__PURE__ */ React.createElement("div", { style: S.bubbleHead }, /* @__PURE__ */ React.createElement("span", { style: { color: SENDER, fontWeight: 600 } }, m.anon && /* @__PURE__ */ React.createElement(EyeOff, { size: 11, style: { verticalAlign: -1, marginRight: 3 } }), senderLabel(m)), pinned && /* @__PURE__ */ React.createElement(Pin, { size: 11, style: { color: ACCENT, flexShrink: 0 } }), /* @__PURE__ */ React.createElement("span", { style: S.time }, fmtTime(m.ts)), /* @__PURE__ */ React.createElement("button", { style: S.miniDel, title: "Message options", onClick: (e) => {
+    return /* @__PURE__ */ React.createElement("div", { key: m.id, id: "msg-" + m.id, style: { ...S.bubbleRow, justifyContent: mine ? "flex-end" : "flex-start", ...menuFor === m.id ? S.bubbleRowActive : {} }, className: "reveal" }, /* @__PURE__ */ React.createElement("div", { style: { ...S.bubble, ...mine ? S.bubbleMine : {}, ...highlight === m.id ? S.bubbleFlash : {} } }, /* @__PURE__ */ React.createElement("div", { style: S.bubbleHead }, /* @__PURE__ */ React.createElement("span", { style: { color: SENDER, fontWeight: 600 } }, m.anon && /* @__PURE__ */ React.createElement(EyeOff, { size: 11, style: { verticalAlign: -1, marginRight: 3 } }), senderLabel(m)), pinned && /* @__PURE__ */ React.createElement(Pin, { size: 11, style: { color: ACCENT, flexShrink: 0 } }), /* @__PURE__ */ React.createElement("span", { style: S.time }, fmtTime(m.ts)), /* @__PURE__ */ React.createElement("button", { style: S.miniDel, title: "Message options", onClick: (e) => {
       e.stopPropagation();
       setMenuFor((v) => v === m.id ? null : m.id);
     } }, /* @__PURE__ */ React.createElement(MoreVertical, { size: 14 }))), menuFor === m.id && /* @__PURE__ */ React.createElement(
@@ -620,7 +620,7 @@ function MsgMenu({ mine, isAdmin, hasThread, muted, pinned, onClose, onReply, on
     icon,
     /* @__PURE__ */ React.createElement("span", null, label)
   );
-  return /* @__PURE__ */ React.createElement("div", { style: S.menu, onClick: (e) => e.stopPropagation() }, item(/* @__PURE__ */ React.createElement(CornerUpLeft, { size: 15 }), "Reply", onReply), hasThread && item(/* @__PURE__ */ React.createElement(MessageSquare, { size: 15 }), "View message thread", onThread), isAdmin && item(pinned ? /* @__PURE__ */ React.createElement(PinOff, { size: 15 }) : /* @__PURE__ */ React.createElement(Pin, { size: 15 }), pinned ? "Unpin message" : "Pin message", onTogglePin), !mine && item(muted ? /* @__PURE__ */ React.createElement(BellOff, { size: 15 }) : /* @__PURE__ */ React.createElement(Bell, { size: 15 }), muted ? "Unmute user" : "Mute user", onToggleMute), (mine || isAdmin) && item(/* @__PURE__ */ React.createElement(Trash2, { size: 15 }), "Delete message", onDelete, true));
+  return /* @__PURE__ */ React.createElement("div", { "data-role": "msg-menu", style: S.menu, onClick: (e) => e.stopPropagation() }, item(/* @__PURE__ */ React.createElement(CornerUpLeft, { size: 15 }), "Reply", onReply), hasThread && item(/* @__PURE__ */ React.createElement(MessageSquare, { size: 15 }), "View message thread", onThread), isAdmin && item(pinned ? /* @__PURE__ */ React.createElement(PinOff, { size: 15 }) : /* @__PURE__ */ React.createElement(Pin, { size: 15 }), pinned ? "Unpin message" : "Pin message", onTogglePin), !mine && item(muted ? /* @__PURE__ */ React.createElement(BellOff, { size: 15 }) : /* @__PURE__ */ React.createElement(Bell, { size: 15 }), muted ? "Unmute user" : "Mute user", onToggleMute), (mine || isAdmin) && item(/* @__PURE__ */ React.createElement(Trash2, { size: 15 }), "Delete message", onDelete, true));
 }
 function ReplyPreview({ replyTo, byKey, mutedSet, revealed, onReveal }) {
   const parent = byKey.get(replyTo.key);
@@ -793,6 +793,10 @@ const S = {
   searchInput: { flex: 1, background: PANEL2, border: `1px solid ${LINE}`, color: TEXT, borderRadius: 20, padding: "8px 14px", outline: "none", fontSize: 14, fontFamily: "inherit" },
   feed: { flex: 1, overflowY: "auto", padding: 14, display: "flex", flexDirection: "column", gap: 12 },
   bubbleRow: { display: "flex" },
+  // A message row is its own stacking context (the `.reveal` animation), which
+  // traps the absolutely-positioned menu's z-index. While a menu is open we lift
+  // the entire row so the following message can never paint over the menu.
+  bubbleRowActive: { position: "relative", zIndex: 40 },
   // Telegram-style: bubbles use most of the width, and there are exactly two
   // message colors — the viewer's own (#123f38) and everybody else's (PANEL2).
   bubble: { position: "relative", maxWidth: "92%", background: PANEL2, border: `1px solid ${LINE}`, borderRadius: 16, borderBottomLeftRadius: 5, padding: "9px 13px", fontSize: 15, lineHeight: 1.4, boxShadow: "0 1px 2px rgba(0,0,0,.35)" },

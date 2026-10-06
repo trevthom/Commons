@@ -177,9 +177,31 @@ check("the menu hides Mute on your own message", !/Mute user/.test(screen()));
 check("the menu offers Delete on your own message", /Delete message/.test(screen()));
 check("no thread option before any replies exist", !/View message thread/.test(screen()));
 
+// --- the open menu must not be covered by another message ---
+// Every row animates in via `.reveal`, which makes each row its own stacking
+// context and would trap the menu's z-index under the row below it. The row
+// that hosts an open menu is lifted so later messages can never paint over it.
+const menuNode = document.querySelector('[data-role="msg-menu"]');
+check("the menu is present in the DOM", !!menuNode);
+const menuRow = menuNode && menuNode.parentElement && menuNode.parentElement.parentElement;
+check("the row carrying the open menu is lifted above its neighbours",
+  !!menuRow && menuRow.style.position === "relative" && menuRow.style.zIndex === "40",
+  menuRow ? `position=${menuRow.style.position} zIndex=${menuRow.style.zIndex}` : "no row");
+const liftedRows = [...document.querySelectorAll('[title="Message options"]')]
+  .map((b) => b.parentElement.parentElement.parentElement)
+  .filter((row) => row && row.style.zIndex === "40");
+check("only the open menu's row is lifted", liftedRows.length === 1 && liftedRows[0] === menuRow);
+const coveredRows = [...document.querySelectorAll('[title="Message options"]')]
+  .map((b) => b.parentElement.parentElement.parentElement)
+  .filter((row) => row && row !== menuRow && row.style.zIndex);
+check("no other message row competes with the menu", coveredRows.length === 0);
+
 // --- reply chains ---
 check("clicked Reply", click("Reply"));
 await sleep(150);
+check("closing the menu releases the lifted row",
+  [...document.querySelectorAll('[title="Message options"]')]
+    .every((b) => b.parentElement.parentElement.parentElement.style.zIndex !== "40"));
 check("the reply banner names the parent author", /Replying to tester/.test(screen()));
 setInput(inputByPlaceholder("Message the whole community…"), "replying to hello");
 inputByPlaceholder("Message the whole community…").dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));

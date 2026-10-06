@@ -190,8 +190,13 @@ Reads — open; a group id or invite is the capability:
   when touching bubble styles.
 - The Invite modal has two tabs: **Indefinite link** (`group.invite`) and
   **One-time link** (`group.inviteOnce`, with a button to generate/rotate it).
+- The per-message menu lives inside its own row, and each row animates in with
+  `.reveal` — which makes every row its own stacking context. An open menu would
+  therefore be painted over by the message below it. The row hosting an open
+  menu gets `S.bubbleRowActive` (`position: relative; zIndex: 40`) so it stacks
+  above its siblings; don't remove that or the menu gets covered again.
 - After changing any file in `public/`, **bump `CACHE` in `public/sw.js`**
-  (currently `commons-v6`; go to `commons-v7`, …) so installed clients drop the
+  (currently `commons-v7`; go to `commons-v8`, …) so installed clients drop the
   old shell. The worker is network-first now, so the bump mainly guarantees
   eviction.
 
