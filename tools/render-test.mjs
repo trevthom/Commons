@@ -272,6 +272,39 @@ check("exactly two message colors exist", bubbleColors.size === 2, [...bubbleCol
 const nameColors = new Set(bubbles.map((d) => d.querySelector("span") && d.querySelector("span").style.color));
 check("sender names all share one color", nameColors.size === 1, [...nameColors].join(", "));
 
+// --- the menu must never hang off the screen edge ---
+// The menu is at least 178px wide, and a short left-aligned message leaves
+// almost no room to its left. Anchoring it to the bubble's right edge would
+// push it past the screen's left edge, so it anchors to whichever edge the
+// bubble is aligned to and always grows inward.
+const shortOther = optionsBtnFor("bob solo");
+check("a short message from someone else has a menu", !!shortOther);
+shortOther.click();
+await sleep(150);
+const shortMenu = document.querySelector('[data-role="msg-menu"]');
+check("a short message's menu anchors to its left edge, not off-screen",
+  !!shortMenu && shortMenu.style.left === "4px" && !shortMenu.style.right,
+  shortMenu ? `left=${shortMenu.style.left} right=${shortMenu.style.right}` : "no menu");
+shortOther.click(); // toggle it shut again
+await sleep(150);
+
+let anchoredOk = 0, anchoredBad = 0;
+for (const b of document.querySelectorAll('[title="Message options"]')) {
+  b.click();
+  await sleep(120);
+  const row = b.parentElement.parentElement.parentElement;
+  const menu = document.querySelector('[data-role="msg-menu"]');
+  const wantsRight = row.style.justifyContent === "flex-end";
+  const ok = !!menu && (wantsRight
+    ? menu.style.right === "4px" && !menu.style.left
+    : menu.style.left === "4px" && !menu.style.right);
+  ok ? anchoredOk++ : anchoredBad++;
+  b.click(); // the same button toggles the menu shut again
+  await sleep(120);
+}
+check("every menu anchors to the bubble's own edge", anchoredOk >= 4 && anchoredBad === 0, `${anchoredOk} ok, ${anchoredBad} wrong`);
+check("no menu is left open after checking", !document.querySelector('[data-role="msg-menu"]'));
+
 const bobOpt = optionsBtnFor("from bob");
 check("the other member's message has a menu", !!bobOpt);
 bobOpt.click();

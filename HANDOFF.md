@@ -195,8 +195,14 @@ Reads — open; a group id or invite is the capability:
   therefore be painted over by the message below it. The row hosting an open
   menu gets `S.bubbleRowActive` (`position: relative; zIndex: 40`) so it stacks
   above its siblings; don't remove that or the menu gets covered again.
+- The same menu is 178px wide and is positioned inside the bubble, so it must
+  anchor to **the edge the bubble is aligned to**, not always its right edge: a
+  short left-aligned message leaves almost no room to its left, and a
+  right-anchored menu runs off the screen's left edge. That is `S.menuMine`
+  (`right: 4`) for own bubbles and `S.menuTheirs` (`left: 4`) for other people's,
+  so the menu always grows inward.
 - After changing any file in `public/`, **bump `CACHE` in `public/sw.js`**
-  (currently `commons-v7`; go to `commons-v8`, …) so installed clients drop the
+  (currently `commons-v8`; go to `commons-v9`, …) so installed clients drop the
   old shell. The worker is network-first now, so the bump mainly guarantees
   eviction.
 
