@@ -353,7 +353,8 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  // Reacting toggles the caller's emoji on a message. Like every other write
+  // Reacting sets the caller's single emoji on a message (a new one replaces
+  // the old; the same one again removes it). Like every other write
   // the author comes from the session, and `updatedAt` is bumped so delta
   // polls (mget?since) hand the edited message to everyone else quickly.
   if (p === "/api/message/react" && req.method === "POST") {
@@ -368,10 +369,14 @@ const server = http.createServer(async (req, res) => {
       const m = store[msgKey];
       if (m.system || !REACTIONS.includes(emoji)) return sendJSON(res, 200, { ok: false, error: "not-found" });
       m.reactions = (m.reactions && typeof m.reactions === "object") ? m.reactions : {};
-      const who = Array.isArray(m.reactions[emoji]) ? m.reactions[emoji] : [];
-      if (who.includes(key)) m.reactions[emoji] = who.filter((k) => k !== key);
-      else m.reactions[emoji] = [...who, key];
-      if (!m.reactions[emoji].length) delete m.reactions[emoji];
+      const had = Array.isArray(m.reactions[emoji]) && m.reactions[emoji].includes(key);
+      // One reaction per member: clear the caller from every emoji, then add
+      // the new one unless they tapped the emoji they already had (a removal).
+      for (const [e, who] of Object.entries(m.reactions)) {
+        const rest = Array.isArray(who) ? who.filter((k) => k !== key) : [];
+        if (rest.length) m.reactions[e] = rest; else delete m.reactions[e];
+      }
+      if (!had) m.reactions[emoji] = [...(m.reactions[emoji] || []), key];
       if (!Object.keys(m.reactions).length) delete m.reactions;
       m.updatedAt = now();
       persist();

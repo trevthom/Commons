@@ -106,7 +106,7 @@ Content — authenticated; **the server sets `author`/`authorName` from the sess
 
 - `POST /api/message/send` `{ key, sessionId, gid, text, anon, replyTo? }` → `{ ok, key, message }`
 - `POST /api/message/delete` `{ key, sessionId, gid, msgKey }` — author or admin
-- `POST /api/message/react` `{ key, sessionId, gid, msgKey, emoji }` → `{ ok, key, message }` — any member; toggles the caller's reaction, only accepts the fixed `REACTIONS` set, and bumps `updatedAt`
+- `POST /api/message/react` `{ key, sessionId, gid, msgKey, emoji }` → `{ ok, key, message }` — any member; sets the caller's one reaction (a different emoji replaces it, the same emoji removes it), only accepts the fixed `REACTIONS` set, and bumps `updatedAt`
 - `POST /api/message/search` `{ key, sessionId, gid, q }` → `{ ok, results[], total }` — scans the whole history server-side
 - `POST /api/post/create` `{ key, sessionId, gid, title, text, anon }` → `{ ok, key, post }`
 - `POST /api/post/delete` `{ key, sessionId, gid, postKey }` — author or admin
@@ -242,8 +242,9 @@ Reads — open; a group id or invite is the capability:
   is — see known issue 1. The message menu opens with a quick bar of the
   first five (`QUICK_REACTIONS`) plus a ▼ in the sixth slot
   (`data-role="react-more"`) that expands the remaining fourteen
-  (`data-role="react-more-panel"`, a 5-column grid). Reacting keeps the menu
-  open so several can be picked; chips under the message `text`
+  (`data-role="react-more-panel"`, a 5-column grid). Each member has **one**
+  reaction per message: picking another replaces it (the menu stays open, so
+  the last pick wins) and picking the same one removes it; chips under the message `text`
   (`data-role="reaction"`, viewer's own highlighted) toggle on tap. The server
   accepts only the fixed `REACTIONS` list — keep it in sync with the copy in
   `src/app.src.jsx`.
@@ -282,7 +283,7 @@ Reads — open; a group id or invite is the capability:
   opens upward instead of being clipped by the feed's edge and covered by the
   composer.
 - After changing any file in `public/`, **bump `CACHE` in `public/sw.js`**
-  (currently `commons-v11`; go to `commons-v12`, …) so installed clients drop the
+  (currently `commons-v12`; go to `commons-v13`, …) so installed clients drop the
   old shell. The worker is network-first now, so the bump mainly guarantees
   eviction.
 

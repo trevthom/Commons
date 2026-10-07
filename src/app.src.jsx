@@ -808,7 +808,8 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
 
 // The per-message menu (opened from the ⋮ button in a bubble's header): a quick
 // reaction bar above the items, with a ▼ in the sixth slot that expands the
-// rest of the palette. Reacting keeps the menu open so several can be picked.
+// rest of the palette. Each member has one reaction per message: picking
+// another replaces it, and picking the same one again removes it.
 function MsgMenu({ mine, isAdmin, hasThread, muted, pinned, menuUp, onClose, onReply, onThread, onToggleMute, onTogglePin, onDelete, onReact }) {
   const [expanded, setExpanded] = useState(false);
   const item = (icon, label, onClick, danger) => (
@@ -838,7 +839,8 @@ function MsgMenu({ mine, isAdmin, hasThread, muted, pinned, menuUp, onClose, onR
   </div>;
 }
 
-// Reaction chips under a message's text; tapping one toggles that reaction.
+// Reaction chips under a message's text; tapping one sets or removes the
+// viewer's reaction (the server keeps one per member).
 function Reactions({ msg, meKey, onToggle }) {
   const shown = msg.reactions && typeof msg.reactions === "object"
     ? Object.entries(msg.reactions).filter(([, who]) => Array.isArray(who) && who.length)
