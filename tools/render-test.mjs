@@ -208,7 +208,12 @@ await sleep(700);
 const chip = document.querySelector('[data-role="reaction"]');
 check("reacting adds a chip with a count of 1", !!chip && /👍/.test(chip.textContent) && chip.textContent.replace(/\D/g, "") === "1", chip ? chip.textContent : "no chip");
 menuEl = document.querySelector('[data-role="msg-menu"]');
-menuEl.querySelector('[data-role="react"]').click(); // 👍 again toggles it off
+menuEl.querySelectorAll('[data-role="react"]')[1].click(); // 👎 replaces 👍
+await sleep(700);
+const chips = [...document.querySelectorAll('[data-role="reaction"]')];
+check("a second emoji replaces the first", chips.length === 1 && /👎/.test(chips[0].textContent), chips.map((c) => c.textContent).join(" "));
+menuEl = document.querySelector('[data-role="msg-menu"]');
+menuEl.querySelectorAll('[data-role="react"]')[1].click(); // 👎 again toggles it off
 await sleep(700);
 check("reacting with the same emoji again removes it", !document.querySelector('[data-role="reaction"]'));
 

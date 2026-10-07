@@ -137,8 +137,11 @@ const newAccount = async () => (await post("/api/account/create", {})).json;
   ok("a member can react to a message", reacted.json && reacted.json.ok && (reacted.json.message.reactions["🔥"] || []).includes(ownerKey));
   const afterReact = await get(`/api/mget?prefix=${encodeURIComponent(`msg:${gid}:general:`)}&since=${reacted.json.message.ts}`);
   ok("a reacted (edited) message comes through a delta read", afterReact.json.items.some(([k]) => k === msgKey1));
-  const unreacted = await post("/api/message/react", { key: ownerKey, sessionId: ownerSid2, gid, msgKey: msgKey1, emoji: "🔥" });
-  ok("reacting again removes the reaction", unreacted.json && unreacted.json.ok && !(unreacted.json.message.reactions || {})["🔥"]);
+  const swapped = await post("/api/message/react", { key: ownerKey, sessionId: ownerSid2, gid, msgKey: msgKey1, emoji: "👍" });
+  ok("a second emoji replaces the first (one reaction per member)", swapped.json && swapped.json.ok
+    && (swapped.json.message.reactions["👍"] || []).includes(ownerKey) && !swapped.json.message.reactions["🔥"]);
+  const unreacted = await post("/api/message/react", { key: ownerKey, sessionId: ownerSid2, gid, msgKey: msgKey1, emoji: "👍" });
+  ok("reacting again removes the reaction", unreacted.json && unreacted.json.ok && !unreacted.json.message.reactions);
 
   // --- search runs server-side over the whole history ---
   const search = await post("/api/message/search", { key: memberKey, sessionId: memberSid, gid, q: "🔥" });
