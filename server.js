@@ -384,6 +384,27 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
+  // Only the author may edit a message (admins can delete, not rewrite). The
+  // edit keeps the message's place and identity, stamps `editedAt` so every
+  // client can mark it "edited", and bumps `updatedAt` for the delta polls.
+  if (p === "/api/message/edit" && req.method === "POST") {
+    const body = await readBody(req);
+    const key = normKey(body.key); const sessionId = body.sessionId;
+    const gid = String(body.gid || ""); const msgKey = String(body.msgKey || "");
+    const text = String(body.text || "").trim().slice(0, 4000);
+    return atomic(() => {
+      if (!sessionOk(key, sessionId)) return sendJSON(res, 200, { ok: false, error: "auth" });
+      const g = store[groupKey(gid)];
+      if (!g || !g.members[key]) return sendJSON(res, 200, { ok: false, error: "not-member" });
+      if (!msgKey.startsWith(`msg:${gid}:general:`) || !store[msgKey] || store[msgKey].system) return sendJSON(res, 200, { ok: false, error: "not-found" });
+      const m = store[msgKey];
+      if (m.author !== key) return sendJSON(res, 200, { ok: false, error: "forbidden" });
+      if (!text) return sendJSON(res, 200, { ok: false, error: "empty" });
+      if (text !== m.text) { m.text = text; m.editedAt = now(); m.updatedAt = m.editedAt; persist(); }
+      sendJSON(res, 200, { ok: true, key: msgKey, message: m });
+    });
+  }
+
   if (p === "/api/post/create" && req.method === "POST") {
     const body = await readBody(req);
     const key = normKey(body.key); const sessionId = body.sessionId; const gid = String(body.gid || "");

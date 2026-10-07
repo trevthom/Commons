@@ -76,6 +76,22 @@ check("the home screen rendered", /Your communities/.test(screen()));
 const persisted = (() => { try { return JSON.parse(dom.window.localStorage.getItem("cc_session_v2")); } catch { return null; } })();
 check("the session persists in localStorage for the next launch", !!persisted && typeof persisted.key === "string" && typeof persisted.sessionId === "string", persisted);
 
+// --- home settings: the gear holds the login key and Log out ---
+check("the home screen has a Settings gear", titled("Settings"));
+check("Log out moved off the home header", !titled("Log out"));
+document.querySelector('[title="Settings"]').click();
+await sleep(300);
+const keyText = () => (document.querySelector('[data-role="login-key-text"]') || {}).textContent || "";
+check("home settings show the login key, hidden at first", !!modal() && /Login key/.test(modal().textContent) && !/[A-Z0-9]{4} [A-Z0-9]{4}/.test(keyText()), keyText());
+document.querySelector('[title="Show login key"]').click();
+await sleep(100);
+check("the login key can be revealed", keyText().replace(/ /g, "") === persisted.key, keyText());
+check("the login key has a copy button", titled("Copy login key"));
+check("home settings offer Log out", [...modal().querySelectorAll("button")].some((b) => /Log out/.test(b.textContent)));
+check("home settings have no community actions", !/Invite people|Manage members/.test(modal().textContent));
+modal().querySelector("button").click();
+await sleep(200);
+
 // --- create a community ---
 check("clicked 'Create'", click("Create"));
 await sleep(300);
@@ -98,8 +114,12 @@ check("the group screen rendered", /Testville/.test(screen()));
 
 // --- requested UI changes on the group screen ---
 check("the second tab is labelled 'Forum'", /Forum/.test(screen()) && !/Neighborhood/.test(screen()));
-check("the invite icon has hover text", titled("Invite people"));
-check("the admin icon has hover text", titled("Manage members"));
+check("the room header has a Settings gear", titled("Settings"));
+check("invite, manage members and log out left the room header", !titled("Invite people") && !titled("Manage members") && !titled("Log out"));
+document.querySelector('[title="Settings"]').click();
+await sleep(300);
+check("room settings offer Invite people, Manage members, the login key and Log out",
+  !!modal() && ["Invite people", "Manage members", "Login key", "Log out"].every((t) => modal().textContent.includes(t)), modal() ? modal().textContent : "no sheet");
 check("the username-change control has hover text", titled("Change your username"));
 const memberCountEl = document.querySelector('[data-role="member-count"]');
 check("the room header shows the member count", !!memberCountEl && /^1 member$/.test((memberCountEl.textContent || "").trim()), memberCountEl ? memberCountEl.textContent : "missing");
@@ -110,7 +130,7 @@ check("the per-message anonymous toggle remains", titled("Sending as tester"));
 check("a search box is present", !!inputByPlaceholder("Search all messages"));
 
 // --- invite codes: indefinite vs one-time ---
-document.querySelector('[title="Invite people"]').click();
+check("clicked Invite people in settings", click("Invite people", modal()));
 await sleep(300);
 const inviteCode = (screen().match(/Invite code:\s*([a-z0-9]+)/) || [])[1];
 check("the invite modal shows an indefinite code", !!inviteCode);
@@ -164,6 +184,36 @@ setInput(composerEmoji, "emoji test 🔥");
 composerEmoji.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 await sleep(1500);
 check("an emoji message was sent", /emoji test 🔥/.test(screen()));
+
+// --- the message box is a growing textarea: Shift+Enter is a new line ---
+const box = inputByPlaceholder("Message the whole community…");
+check("the message box is a textarea", !!box && box.tagName === "TEXTAREA");
+setInput(box, "line one");
+box.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true }));
+await sleep(300);
+check("Shift+Enter does not send", box.value === "line one" && !/line one/.test(document.querySelector('[data-role="feed"]').textContent));
+setInput(box, "line one\nline two");
+box.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+await sleep(1500);
+const multi = [...document.querySelectorAll('[data-role="feed"] div')].find((d) => d.textContent === "line one\nline two");
+check("a multi-line message keeps its line break", !!multi && multi.style.whiteSpace === "pre-wrap");
+
+// --- editing your own message ---
+const optsFor = (text) => [...document.querySelectorAll('[title="Message options"]')].find((b) => (b.parentElement.parentElement.textContent || "").includes(text));
+optsFor("emoji test 🔥").click();
+await sleep(150);
+check("your own message offers Edit message", click("Edit message"));
+await sleep(200);
+const editBox = inputByPlaceholder("Message the whole community…");
+check("the edit banner opens with the text loaded", !!document.querySelector('[data-role="edit-banner"]') && editBox.value === "emoji test 🔥", editBox.value);
+setInput(editBox, "emoji test 🔥 changed");
+editBox.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+await sleep(1200);
+const editedBubble = optsFor("emoji test 🔥 changed");
+const editedRow = editedBubble && editedBubble.parentElement.parentElement;
+check("the edit replaced the text", !!editedRow && !document.querySelector('[data-role="edit-banner"]'));
+check("an edited message is marked edited", !!editedRow && !!editedRow.querySelector('[data-role="edited"]') && /edited/.test(editedRow.querySelector('[data-role="msg-stamp"]').textContent));
+check("an unedited message carries no edited mark", !optsFor("banana bread").parentElement.parentElement.querySelector('[data-role="edited"]'));
 
 // --- per-message menu ---
 setInput(inputByPlaceholder("Search all messages"), "");
@@ -415,6 +465,7 @@ await sleep(150);
 check("the menu offers Mute user there", /Mute user/.test(screen()));
 // The viewer is this community's admin; admins could already delete any message.
 check("an admin still gets Delete on another member's message", /Delete message/.test(screen()));
+check("another member's message offers no Edit", !/Edit message/.test(screen()));
 
 // reply to the other member first, so their message is part of a chain
 check("clicked Reply to the other member", click("Reply"));

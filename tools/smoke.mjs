@@ -143,6 +143,18 @@ const newAccount = async () => (await post("/api/account/create", {})).json;
   const unreacted = await post("/api/message/react", { key: ownerKey, sessionId: ownerSid2, gid, msgKey: msgKey1, emoji: "👍" });
   ok("reacting again removes the reaction", unreacted.json && unreacted.json.ok && !unreacted.json.message.reactions);
 
+  // --- edits: author only, stamped `editedAt`, carried by delta reads ---
+  const ownerEdit = await post("/api/message/edit", { key: ownerKey, sessionId: ownerSid2, gid, msgKey: msgKey1, text: "hijacked" });
+  ok("only the author can edit a message (not even the owner)", ownerEdit.json && ownerEdit.json.error === "forbidden");
+  const emptyEdit = await post("/api/message/edit", { key: memberKey, sessionId: memberSid, gid, msgKey: msgKey1, text: "   " });
+  ok("an edit cannot empty a message", emptyEdit.json && emptyEdit.json.error === "empty");
+  const noSessEdit = await post("/api/message/edit", { key: memberKey, gid, msgKey: msgKey1, text: "no session" });
+  ok("an edit needs the session", noSessEdit.json && noSessEdit.json.error === "auth");
+  const edited = await post("/api/message/edit", { key: memberKey, sessionId: memberSid, gid, msgKey: msgKey1, text: "hello 👋🔥 again" });
+  ok("the author can edit their message", edited.json && edited.json.ok && edited.json.message.text === "hello 👋🔥 again" && edited.json.message.editedAt > 0);
+  const afterEdit = await get(`/api/mget?prefix=${encodeURIComponent(`msg:${gid}:general:`)}&since=${edited.json.message.editedAt - 1}`);
+  ok("an edited message comes through a delta read", afterEdit.json.items.some(([k, v]) => k === msgKey1 && v.text === "hello 👋🔥 again"));
+
   // --- search runs server-side over the whole history ---
   const search = await post("/api/message/search", { key: memberKey, sessionId: memberSid, gid, q: "🔥" });
   ok("search finds a message by emoji", search.json && search.json.ok && search.json.results.length === 1 && search.json.results[0].key === msgKey1);

@@ -26,7 +26,7 @@ Any instructions elsewhere describing TanStack Start, Vite, Convex, or shadcn
 | `public/sw.js` | Service worker (app-shell cache). |
 | `public/*.min.js`, `lucide.js`, `qrcode.min.js` | Vendored libraries. Do not hand-edit. |
 | `tools/smoke.mjs` | Dependency-free API test (needs a running server). |
-| `tools/render-test.mjs` | Loads the real page in jsdom and drives sign-up, community creation, invites, server-backed search, the emoji picker, the message menu, replies, pinning, muting, and the Forum tab. |
+| `tools/render-test.mjs` | Loads the real page in jsdom and drives sign-up, community creation, invites, server-backed search, the Settings sheets and login key, the emoji picker, the growing message box, the message menu, editing, replies, pinning, muting, and the Forum tab. |
 | `data.json` | Runtime database. **Never commit** (gitignored). |
 
 ## Build & run
@@ -61,7 +61,7 @@ with `freebuff-preview start`.
 | --- | --- |
 | `account:<16-char key>` | `{ key, createdAt, sessionId }` — **the login credential itself** |
 | `group:<id>` | `{ id, name, createdAt, ownerKey, admins[], members{key:{username,joinedAt,lastNameChange}}, usernames{lowercased→key}, banned[], invite, inviteOnce, pins[] }` |
-| `msg:<gid>:general:<ts>:<uid>` | `{ id, ts, text, anon, author, authorName, gid, replyTo?, reactions?, updatedAt? }` (or `{ system:true, text }`) |
+| `msg:<gid>:general:<ts>:<uid>` | `{ id, ts, text, anon, author, authorName, gid, replyTo?, reactions?, editedAt?, updatedAt? }` (or `{ system:true, text }`) |
 | `post:<gid>:<ts>:<uid>` | `{ id, ts, title, text, anon, author, authorName, gid, replies[] }` |
 
 Accounts are anonymous login keys; there is no email/password and no recovery.
@@ -106,6 +106,7 @@ Content — authenticated; **the server sets `author`/`authorName` from the sess
 
 - `POST /api/message/send` `{ key, sessionId, gid, text, anon, replyTo? }` → `{ ok, key, message }`
 - `POST /api/message/delete` `{ key, sessionId, gid, msgKey }` — author or admin
+- `POST /api/message/edit` `{ key, sessionId, gid, msgKey, text }` → `{ ok, key, message }` — **author only** (admins may delete, never rewrite); replaces `text`, stamps `editedAt` and bumps `updatedAt`
 - `POST /api/message/react` `{ key, sessionId, gid, msgKey, emoji }` → `{ ok, key, message }` — any member; sets the caller's one reaction (a different emoji replaces it, the same emoji removes it), only accepts the fixed `REACTIONS` set, and bumps `updatedAt`
 - `POST /api/message/search` `{ key, sessionId, gid, q }` → `{ ok, results[], total }` — scans the whole history server-side
 - `POST /api/post/create` `{ key, sessionId, gid, title, text, anon }` → `{ ok, key, post }`
@@ -253,6 +254,25 @@ Reads — open; a group id or invite is the capability:
   reads the community name, the member count (`data-role="member-count"`) and
   `<username> ✎ · owner|admin`: the pencil sits immediately right of the
   username and the role to its right.
+- Each header has one **Settings gear** (`title="Settings"`) at the top right,
+  which opens `SettingsModal`. On "Your communities" it holds the login key and
+  Log out. Inside a community it also holds Invite people and (admins only)
+  Manage members, which open the existing `InviteModal` / `AdminModal`. The
+  login key starts hidden (`data-role="login-key-text"` shows dots) with Show
+  and Copy buttons.
+- The message box (`Composer`) is a `<textarea rows=1>` that grows with its
+  text up to `COMPOSER_ROWS` (6) lines, then scrolls; the text itself has no
+  client limit (the server caps a message at 4000 characters). Enter sends,
+  Shift+Enter adds a line. The row is bottom-aligned, so the icons and send
+  button stay put while the box grows upward; the emoji panel opens above it.
+  Message text renders with `S.msgText` (`white-space: pre-wrap`), so line
+  breaks survive.
+- **Editing**: the author's message menu has "Edit message". It opens an
+  "Editing message" banner (`data-role="edit-banner"`, which replaces any reply
+  banner) and loads the text into the box; the send button becomes a check and
+  the anonymity toggle is locked, since an edit keeps the original name. The
+  `Stamp` component shows `edited · ` (`data-role="edited"`) before the time of
+  any message with `editedAt`, in the room and in threads.
 - Enter activates a screen's primary button. `onEnter(fn)` wraps the handler for
   the login key, the create-community name, the join code, the username picker
   and the change-username dialog; the handlers themselves guard on emptiness and
@@ -283,7 +303,7 @@ Reads — open; a group id or invite is the capability:
   opens upward instead of being clipped by the feed's edge and covered by the
   composer.
 - After changing any file in `public/`, **bump `CACHE` in `public/sw.js`**
-  (currently `commons-v12`; go to `commons-v13`, …) so installed clients drop the
+  (currently `commons-v13`; go to `commons-v14`, …) so installed clients drop the
   old shell. The worker is network-first now, so the bump mainly guarantees
   eviction.
 
