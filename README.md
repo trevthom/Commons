@@ -22,9 +22,19 @@ Open the app in a browser, or install it as a PWA on a phone.
 - **Pinned messages** — admins can pin several. The bar at the top shows the
   most recent pin; tap it to scroll through the others (the counter reads
   "1/3", "2/3", …). Deleting a message removes its pin.
-- **Search** runs on the server across the community's *entire* history, not
-  just what your device has loaded. Results list the sender, time, and message;
-  tapping a result jumps to it in the chat.
+- **Search** — tap the magnifying glass beside the Settings gear. It runs on the
+  server across the community's *entire* history, not just what your device has
+  loaded. Results list the sender, time, and message; tapping a result jumps to
+  it in the chat. The X closes the search bar.
+- **Pictures** — the picture button beside the emoji button attaches a photo or
+  GIF; type an optional caption and send. Photos are shrunk to 1600px and
+  re-encoded as JPEG on your device (which also strips their location data);
+  GIFs keep their animation. A picture starts uploading the moment you pick it,
+  so pressing send is quick. Tap a picture to see it full screen.
+- **GIFs from your keyboard** — the message box accepts GIFs and stickers from
+  phone keyboards (such as Gboard's GIF button) and pasted pictures. They are
+  attached like any picture. iPhone keyboards copy a GIF instead: paste it into
+  the box.
 - **Emoji picker** in the composer — emoji are ordinary text, so they send
   through the same path as any message.
 - **Reactions** on any message: the ⋮ menu opens with 👍 👎 ❤️ 🔥 💯, and the ▼
@@ -43,8 +53,17 @@ Open the app in a browser, or install it as a PWA on a phone.
 
 **Anonymity**
 - Chosen **per message or post** with the eye button beside the composer.
-- Anonymous labels ("Anon Cedar 42") are stable within a community, so an
-  anonymous regular is recognizable without being identified.
+- Anonymous labels ("Anon Cedar 42") **change every 24 hours**, at midnight
+  Eastern time. Within one community and one day, the same person keeps the
+  same label, so a conversation stays readable; the next day they get a new
+  one, so their anonymous messages can't be linked across days. A message
+  keeps the label of the day it was sent.
+
+**Messages are deleted after 30 days**
+- Every General chat message, picture and Forum post (with its replies) is
+  deleted **30 days after it is sent**. The server checks every hour, so
+  nothing lasts more than about an hour past its 30 days. There is no way to
+  get a deleted message back.
 
 **Moderation**
 - Admins can remove members (who may rejoin), delete any message or post, and
@@ -111,7 +130,9 @@ can open on a phone on the same Wi-Fi. Data is stored in `data.json`.
 
 Environment: `PORT=3000 node server.js` to change the port,
 `DATA_FILE=/path/to/db.json node server.js` to relocate storage (useful with a
-mounted disk).
+mounted disk). Pictures are stored as files in `images/` next to `server.js`;
+`IMAGE_DIR=/path/to/images` moves them. Keep that folder between restarts, the
+same as `data.json`.
 
 ## Develop the UI
 
@@ -131,6 +152,7 @@ With a server running:
 
     node tools/smoke.mjs http://localhost:8080       # API, auth, pins, search
     node tools/render-test.mjs http://localhost:8080 # loads the real page in jsdom and drives it
+    node tools/expiry-test.mjs                       # starts its own server; checks the 30-day deletion
 
 Both exit non-zero on failure. See **HANDOFF.md** for the architecture, data
 model, full API reference, and access rules.

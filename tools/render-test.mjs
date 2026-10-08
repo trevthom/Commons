@@ -44,8 +44,12 @@ const click = (label, within) => {
 };
 const modal = () => document.querySelector(".sheet");
 const inputByPlaceholder = (p, within) =>
-  [...(within || document).querySelectorAll("input, textarea")].find((i) => i.placeholder === p);
+  [...(within || document).querySelectorAll("input, textarea, [data-placeholder]")].find((i) => i.placeholder === p || i.getAttribute("data-placeholder") === p);
+// The message box is contenteditable; everything else is a form field.
+const isEditable = (el) => el.getAttribute("contenteditable") !== null;
+const valueOf = (el) => (isEditable(el) ? el.textContent : el.value);
 const setInput = (el, value) => {
+  if (isEditable(el)) { el.textContent = value; el.dispatchEvent(new dom.window.Event("input", { bubbles: true })); return; }
   const proto = el.tagName === "TEXTAREA" ? dom.window.HTMLTextAreaElement.prototype : dom.window.HTMLInputElement.prototype;
   Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
   el.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
@@ -127,7 +131,13 @@ const nameControl = [...document.querySelectorAll("button")].find((b) => b.title
 check("the header reads '<username> ✎ · owner'", !!nameControl && (nameControl.textContent || "").includes("tester ✎ · owner"), nameControl ? nameControl.textContent : "missing");
 check("the header anonymous toggle is gone", !titled("Posting anonymously by default") && !titled("Posting with your username"));
 check("the per-message anonymous toggle remains", titled("Sending as tester"));
-check("a search box is present", !!inputByPlaceholder("Search all messages"));
+check("search is hidden until its icon is tapped", !inputByPlaceholder("Search all messages") && titled("Search messages"));
+const searchIcon = document.querySelector('[title="Search messages"]');
+const settingsIcon = document.querySelector('[title="Settings"]');
+check("the search icon sits next to Settings", !!searchIcon && searchIcon.nextElementSibling === settingsIcon);
+searchIcon.click();
+await sleep(200);
+check("tapping the search icon shows the search box", !!inputByPlaceholder("Search all messages"));
 
 // --- invite codes: indefinite vs one-time ---
 check("clicked Invite people in settings", click("Invite people", modal()));
@@ -179,19 +189,20 @@ check("the palette renders emoji", !!fireBtn);
 fireBtn.click();
 await sleep(150);
 const composerEmoji = inputByPlaceholder("Message the community…");
-check("clicking an emoji appends it to the composer", (composerEmoji.value || "").includes("🔥"), composerEmoji.value);
+check("clicking an emoji appends it to the composer", (valueOf(composerEmoji) || "").includes("🔥"), valueOf(composerEmoji));
 setInput(composerEmoji, "emoji test 🔥");
 composerEmoji.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 await sleep(1500);
 check("an emoji message was sent", /emoji test 🔥/.test(screen()));
 
-// --- the message box is a growing textarea: Shift+Enter is a new line ---
+// --- the message box grows with its text: Shift+Enter is a new line ---
+// It is contenteditable so phone keyboards offer their GIF buttons.
 const box = inputByPlaceholder("Message the community…");
-check("the message box is a textarea", !!box && box.tagName === "TEXTAREA");
+check("the message box is a rich edit field (for keyboard GIFs)", !!box && isEditable(box) && box.getAttribute("role") === "textbox");
 setInput(box, "line one");
 box.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true }));
 await sleep(300);
-check("Shift+Enter does not send", box.value === "line one" && !/line one/.test(document.querySelector('[data-role="feed"]').textContent));
+check("Shift+Enter does not send", valueOf(box).startsWith("line one") && !/line one/.test(document.querySelector('[data-role="feed"]').textContent));
 setInput(box, "line one\nline two");
 box.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 await sleep(1500);
@@ -205,7 +216,7 @@ await sleep(150);
 check("your own message offers Edit message", click("Edit message"));
 await sleep(200);
 const editBox = inputByPlaceholder("Message the community…");
-check("the edit banner opens with the text loaded", !!document.querySelector('[data-role="edit-banner"]') && editBox.value === "emoji test 🔥", editBox.value);
+check("the edit banner opens with the text loaded", !!document.querySelector('[data-role="edit-banner"]') && valueOf(editBox) === "emoji test 🔥", valueOf(editBox));
 setInput(editBox, "emoji test 🔥 changed");
 editBox.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 await sleep(1200);
@@ -217,15 +228,36 @@ check("an unedited message carries no edited mark", !optsFor("banana bread").par
 
 // --- pictures: a picture button, a thumbnail in the bubble, a full-screen view ---
 check("the message box has a picture button", titled("Send a picture") && !!document.querySelector('[data-role="image-input"]'));
-check("the room says messages are deleted after 30 days", /deleted 30 days after/.test((document.querySelector('[data-role="retention-note"]') || {}).textContent || ""));
+check("the 30-day note is gone from the chat", !document.querySelector('[data-role="retention-note"]') && !/deleted 30 days after/.test(screen()));
+{
+  // A picture pasted (or put in by a keyboard) is attached, never inserted as markup.
+  const pbox = inputByPlaceholder("Message the community…");
+  const gif = new dom.window.File([new Uint8Array([71, 73, 70, 56, 57, 97])], "kbd.gif", { type: "image/gif" });
+  const pasteImg = new dom.window.Event("paste", { bubbles: true, cancelable: true });
+  pasteImg.clipboardData = { files: [gif], items: [], getData: () => "" };
+  pbox.dispatchEvent(pasteImg);
+  await sleep(300);
+  check("pasting a GIF attaches it", !!document.querySelector('[data-role="attach-bar"]') && pasteImg.defaultPrevented);
+  check("the attach bar has no caption hint", !/Add a caption|send the picture as is/.test(screen()));
+  document.querySelector('[title="Remove picture"]').click();
+  await sleep(100);
+  const pasteHtml = new dom.window.Event("paste", { bubbles: true, cancelable: true });
+  pasteHtml.clipboardData = { files: [], items: [], getData: (t) => (t === "text/plain" ? "plain words" : "<b>bold</b>") };
+  pbox.dispatchEvent(pasteHtml);
+  await sleep(100);
+  check("pasted text goes in as plain text", valueOf(pbox) === "plain words" && !pbox.querySelector("b"), pbox.innerHTML);
+  setInput(pbox, "");
+}
 {
   // jsdom has no canvas to shrink a photo, so the picture goes in through the API.
   const groups = await (await fetch(new URL("/api/mget?prefix=group:", BASE))).json();
   const tv = groups.items.map(([, v]) => v).find((g) => g.name === "Testville" && g.members[persisted.key]);
   const sess = JSON.parse(dom.window.localStorage.getItem("cc_session_v2"));
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64");
+  const up = await (await fetch(new URL("/api/image/upload?w=400&h=300", BASE), { method: "POST", body: png,
+    headers: { "Content-Type": "image/png", "X-Commons-Key": sess.key, "X-Commons-Session": sess.sessionId, "X-Commons-Group": tv.id } })).json();
   await fetch(new URL("/api/message/send", BASE), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
-    key: sess.key, sessionId: sess.sessionId, gid: tv.id, text: "picture caption",
-    image: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", imageW: 400, imageH: 300 }) });
+    key: sess.key, sessionId: sess.sessionId, gid: tv.id, text: "picture caption", imageId: up.imageId }) });
 }
 await sleep(3500);
 const picBtn = document.querySelector('[data-role="msg-image"]');
@@ -240,7 +272,7 @@ await sleep(200);
 check("tapping the full-screen picture closes it", !document.querySelector('[data-role="lightbox"]'));
 
 // --- per-message menu ---
-setInput(inputByPlaceholder("Search all messages"), "");
+if (inputByPlaceholder("Search all messages")) setInput(inputByPlaceholder("Search all messages"), "");
 await sleep(200);
 const optionsBtnFor = (text) => {
   for (const b of document.querySelectorAll('[title="Message options"]')) {

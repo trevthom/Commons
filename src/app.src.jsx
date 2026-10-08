@@ -18,10 +18,17 @@ const slist = async (prefix) => { const j = await api.get("/api/list?prefix=" + 
 // The server derives the author from { key, sessionId } and ignores anything
 // else we send, so a client can neither forge nor delete somebody else's post.
 const auth = (s, extra) => ({ key: s.key, sessionId: s.sessionId, ...extra });
-// `image` is { dataUrl, w, h } from prepareImage, or null.
-const messageSend = (s, gid, text, anon, replyTo, image) => api.post("/api/message/send", auth(s, {
-  gid, text, anon, replyTo, ...(image ? { image: image.dataUrl, imageW: image.w, imageH: image.h } : {}),
-}));
+// `imageId` claims a picture uploaded earlier with imageUpload, or is null.
+const messageSend = (s, gid, text, anon, replyTo, imageId) => api.post("/api/message/send", auth(s, { gid, text, anon, replyTo, ...(imageId ? { imageId } : {}) }));
+// Upload a prepared picture ({ blob, w, h }) as raw bytes; the credentials ride
+// in headers so they never land in a URL.
+const imageUpload = async (s, gid, prep) => {
+  try {
+    const r = await fetch(`/api/image/upload?w=${prep.w}&h=${prep.h}`, { method: "POST", body: prep.blob, headers: {
+      "Content-Type": prep.blob.type || "application/octet-stream", "X-Commons-Key": s.key, "X-Commons-Session": s.sessionId, "X-Commons-Group": gid } });
+    return await r.json();
+  } catch { return null; }
+};
 const messageDelete = (s, gid, msgKey) => api.post("/api/message/delete", auth(s, { gid, msgKey }));
 const messageEdit = (s, gid, msgKey, text) => api.post("/api/message/edit", auth(s, { gid, msgKey, text }));
 const messageReact = (s, gid, msgKey, emoji) => api.post("/api/message/react", auth(s, { gid, msgKey, emoji }));
@@ -117,6 +124,10 @@ const postPrefix = (g) => `post:${g}:`;
 const onEnter = (fn) => (e) => { if (e.key === "Enter") { e.preventDefault(); fn(); } };
 
 const ANON_NAMES = ["Maple", "Cedar", "Willow", "Birch", "Aspen", "Sage", "Fern", "Heron", "Otter", "Robin", "Wren", "Lark"];
+// An anonymous name lasts one day (Eastern time): within a community the same
+// person reads as the same "Anon …" all day, and as a different one the next.
+const anonDayFmt = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" });
+const anonName = (author, gid, ts) => anonLabel((author || "x") + (gid || "") + anonDayFmt.format(new Date(ts || 0)));
 const anonLabel = (seed) => { let h = 0; for (const c of String(seed)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return "Anon " + ANON_NAMES[h % ANON_NAMES.length] + " " + (h % 90 + 10); };
 
 // ---------- QR ----------
@@ -365,6 +376,7 @@ function GroupApp({ session, group, setGroup, tab, setTab, onLeave, onLogout }) 
   const [showAdmin, setShowAdmin] = useState(false);
   const [changingName, setChangingName] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const me = group.members[session.key];
   const isOwner = group.ownerKey === session.key;
   const isAdmin = isOwner || (group.admins || []).includes(session.key);
@@ -390,11 +402,14 @@ function GroupApp({ session, group, setGroup, tab, setTab, onLeave, onLogout }) 
     <div style={S.screen}>
       <div style={S.appHeader}>
         <button style={S.iconBtn} title="Back to your communities" onClick={onLeave}><ChevronLeft size={20} /></button>
+        <div style={{ width: 32, flexShrink: 0 }} />{/* balances the two icons on the right */}
         <div style={{ flex: 1, minWidth: 0, textAlign: "center", lineHeight: 1.25 }}>
           <div style={{ fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{group.name}</div>
           <div data-role="member-count" style={{ ...S.muted, fontSize: 12 }}>{memberCount} member{memberCount === 1 ? "" : "s"}</div>
           <button style={{ ...S.nameBtn, textAlign: "center", maxWidth: "100%", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title="Change your username" onClick={() => setChangingName(true)}>{me.username} ✎{isOwner ? " · owner" : isAdmin ? " · admin" : ""}</button>
         </div>
+        <button style={{ ...S.iconBtn, color: searchOpen && tab === "general" ? ACCENT : TEXT }} title="Search messages"
+          onClick={() => { if (tab !== "general") { setTab("general"); setSearchOpen(true); } else setSearchOpen((v) => !v); }}><Search size={19} /></button>
         <button style={S.iconBtn} title="Settings" onClick={() => setSettingsOpen(true)}><Settings size={19} /></button>
       </div>
       <div style={S.tabs}>
@@ -402,7 +417,7 @@ function GroupApp({ session, group, setGroup, tab, setTab, onLeave, onLogout }) 
         <button style={{ ...S.tab, ...(tab === "forum" ? S.tabActive : {}) }} onClick={() => setTab("forum")}><MapPin size={16} /> Forum</button>
       </div>
       {tab === "general"
-        ? <GeneralChat session={session} group={group} me={me} isAdmin={isAdmin} mutes={mutes} onToggleMute={toggleMute} onGroupChange={reloadGroup} />
+        ? <GeneralChat session={session} group={group} me={me} isAdmin={isAdmin} mutes={mutes} onToggleMute={toggleMute} onGroupChange={reloadGroup} searchOpen={searchOpen} onCloseSearch={() => setSearchOpen(false)} />
         : <Forum session={session} group={group} me={me} isAdmin={isAdmin} mutes={mutes} />}
       {settingsOpen && <SettingsModal session={session} onClose={() => setSettingsOpen(false)} onLogout={onLogout} actions={[
         { icon: <QrCode size={18} />, label: "Invite people", onClick: () => setShowInvite(true) },
@@ -535,24 +550,57 @@ const excerptOf = (t) => String(t || "").replace(/\s+/g, " ").trim().slice(0, 90
 const msgExcerpt = (m) => (m && m.text ? excerptOf(m.text) : m && m.image ? "📷 Photo" : "");
 
 // ---------- pictures ----------
-// A picked photo is shrunk before it is sent: at most 1600px on its long side,
-// re-encoded as JPEG, so a 12 MB phone photo travels as a few hundred KB. The
-// server stores it as a file and serves it at /api/image/<id>.<ext>.
-const IMAGE_MAX_SIDE = 1600;
+// A picture is uploaded the moment it is picked or pasted, while the sender
+// still types a caption, so pressing send only has to attach it. Photos are
+// shrunk to at most 1600px and re-encoded as JPEG (which also drops their
+// EXIF data, such as GPS location); a GIF is sent as it is, so it keeps moving.
+const IMAGE_MAX_SIDE = 1600, IMAGE_MAX_BYTES = 8e6;
 const imageUrl = (img) => `/api/image/${img.id}.${img.ext}`;
-async function prepareImage(file) {
+// Decode off the main thread where the browser can (createImageBitmap honours
+// the photo's rotation), else through an <img>.
+async function decodeImage(file) {
+  if (window.createImageBitmap) { try { return await createImageBitmap(file, { imageOrientation: "from-image" }); } catch {} }
   const url = URL.createObjectURL(file);
   try {
-    const img = await new Promise((res, rej) => { const i = new window.Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
-    const scale = Math.min(1, IMAGE_MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
-    const w = Math.max(1, Math.round(img.naturalWidth * scale)), h = Math.max(1, Math.round(img.naturalHeight * scale));
-    const c = document.createElement("canvas"); c.width = w; c.height = h;
-    const ctx = c.getContext("2d");
-    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h); // transparent PNGs get a white page, not black
-    ctx.drawImage(img, 0, 0, w, h);
-    return { dataUrl: c.toDataURL("image/jpeg", 0.82), w, h };
-  } finally { URL.revokeObjectURL(url); }
+    return await new Promise((res, rej) => { const i = new window.Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+  } finally { setTimeout(() => URL.revokeObjectURL(url), 0); }
 }
+const isHeic = (file) => /heic|heif/i.test(file.type || "") || /\.hei[cf]$/i.test(file.name || "");
+async function prepareImage(file) {
+  let src;
+  try { src = await decodeImage(file); }
+  catch { throw new Error(isHeic(file) ? "heic" : "unreadable"); }
+  const sw = src.naturalWidth || src.width, sh = src.naturalHeight || src.height;
+  if (/gif/i.test(file.type || "")) {
+    if (src.close) src.close();
+    if (file.size > IMAGE_MAX_BYTES) throw new Error("image-too-large");
+    return { blob: file, w: sw, h: sh };
+  }
+  const scale = Math.min(1, IMAGE_MAX_SIDE / Math.max(sw, sh));
+  const w = Math.max(1, Math.round(sw * scale)), h = Math.max(1, Math.round(sh * scale));
+  const c = document.createElement("canvas"); c.width = w; c.height = h;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h); // transparent PNGs get a white page, not black
+  ctx.drawImage(src, 0, 0, w, h);
+  if (src.close) src.close();
+  const blob = await new Promise((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error("unreadable"))), "image/jpeg", 0.8));
+  return { blob, w, h };
+}
+const IMAGE_ERRORS = {
+  heic: "This browser can't open HEIC photos. Share the photo as a JPEG instead.",
+  "image-too-large": "That picture is too large (8 MB at most).",
+  "bad-image": "That file isn't a picture that can be sent.",
+  unreadable: "That picture couldn't be opened.",
+};
+const imageError = (code) => IMAGE_ERRORS[code] || "Could not send the picture. Tap send to try again.";
+// The first picture in a paste, drop or keyboard insert, if there is one.
+const imageFrom = (dt) => {
+  if (!dt) return null;
+  for (const f of dt.files || []) if (/^image\//.test(f.type)) return f;
+  for (const it of dt.items || []) if (it.kind === "file" && /^image\//.test(it.type)) { const f = it.getAsFile(); if (f) return f; }
+  return null;
+};
+
 // A picture inside a message. It keeps its shape (up to a height limit) while
 // it loads, so the feed does not jump; a tap opens it full screen.
 function MsgImage({ img, onOpen, maxW = 260 }) {
@@ -609,57 +657,145 @@ const MORE_REACTIONS = REACTIONS.slice(5);
 // itself is not limited). Enter sends; Shift+Enter starts a new line.
 // `editing` loads one of the viewer's messages into the box; sending then
 // saves the edit, and the anonymity toggle is locked, since an edit keeps it.
-// With `allowImage`, a picture button attaches one photo; it shows above the
-// box until sent, and the text becomes its (optional) caption. `onSend`
-// receives (text, anon, image) and, for a picture, resolves to whether it sent.
+//
+// The box is a contenteditable element, not a <textarea>: phone keyboards
+// (Gboard on Android) offer their GIF and sticker buttons only to rich edit
+// fields. Only plain text ever goes in — pastes and drops are inserted as
+// text — and a picture arriving by paste, drop or keyboard is attached instead.
+//
+// With `uploadImage` (file -> Promise<{ ok, imageId, error }>), a picture
+// button attaches one photo or GIF, uploaded at once while the sender types
+// a caption. `onSend` receives (text, anon, imageId) and, for a picture,
+// resolves to true, or to the server's error code.
 const COMPOSER_LINE = 20, COMPOSER_PAD = 9, COMPOSER_ROWS = 6;
-function Composer({ me, onSend, placeholder, editing, allowImage }) {
+const readBox = (el) => {
+  if (!el) return "";
+  const t = typeof el.innerText === "string" ? el.innerText : el.textContent;
+  return (t || "").replace(/\u00a0/g, " ").replace(/\n$/, "");
+};
+function Composer({ me, onSend, placeholder, editing, uploadImage }) {
   const [text, setText] = useState("");
   const [anonOverride, setAnonOverride] = useState(null);
   const [emojiOpen, setEmojiOpen] = useState(false);
-  const [attach, setAttach] = useState(null); // { dataUrl, w, h }
-  const [attachState, setAttachState] = useState(""); // "" | "preparing" | "sending" | "error"
+  const [attach, setAttach] = useState(null); // { file, previewUrl, promise, done }
+  const [attachErr, setAttachErr] = useState("");
+  const [sending, setSending] = useState(false);
   const inputRef = useRef(null);
   const fileRef = useRef(null);
+  const attachRef = useRef(null);
   const wasEditing = useRef(false);
   const anon = !!anonOverride;
+  const allowImage = !!uploadImage;
+
+  const setBox = (t) => {
+    const el = inputRef.current; if (!el) return;
+    el.textContent = t; setText(t);
+    if (document.activeElement === el && t) { const r = document.createRange(); r.selectNodeContents(el); r.collapse(false); const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r); }
+  };
+  // Insert plain text at the caret (falls back to appending).
+  const insertText = (t) => {
+    const el = inputRef.current; if (!el) return;
+    el.focus();
+    let done = false;
+    try { done = document.execCommand("insertText", false, t); } catch {}
+    if (!done) el.textContent = readBox(el) + t;
+    sync();
+  };
+  const sync = () => {
+    const el = inputRef.current; if (!el) return;
+    // A keyboard that inserts its GIF as an <img> (instead of a paste) still
+    // ends up as an attachment, never as markup in the message.
+    for (const img of el.querySelectorAll("img")) {
+      const src = img.getAttribute("src"); img.remove();
+      if (src && allowImage) fetch(src).then((r) => r.blob()).then((b) => startAttach(new File([b], "keyboard." + ((b.type.split("/")[1]) || "gif"), { type: b.type || "image/gif" }))).catch(() => {});
+    }
+    const t = readBox(el);
+    if (!t.trim() && el.innerHTML && !el.textContent) el.innerHTML = ""; // a lone <br> left by deleting
+    setText(t);
+  };
+
+  const dropAttach = () => {
+    const a = attachRef.current;
+    if (a && a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+    attachRef.current = null; setAttach(null); setAttachErr("");
+  };
+  const upload = (job) => {
+    job.done = null;
+    job.promise = uploadImage(job.file).then((r) => {
+      job.done = r || { ok: false };
+      if (attachRef.current === job && !job.done.ok) setAttachErr(imageError(job.done.error));
+      return job.done;
+    });
+  };
+  const startAttach = (file) => {
+    if (!allowImage || !file) return;
+    dropAttach();
+    let previewUrl = "";
+    try { previewUrl = URL.createObjectURL(file); } catch {}
+    const job = { file, previewUrl };
+    attachRef.current = job;
+    upload(job);
+    setAttach(job); setAttachErr("");
+    if (inputRef.current) inputRef.current.focus();
+  };
+
   const send = async () => {
+    // Read the box itself: a keyboard can commit text and Enter in one go,
+    // before React has seen the input event.
+    const caption = readBox(inputRef.current).trim();
     if (attach && !editing) {
-      if (attachState === "sending" || attachState === "preparing") return;
-      setAttachState("sending"); setEmojiOpen(false);
-      const ok = await onSend(text.trim(), anon, attach);
-      if (ok === false) { setAttachState("error"); return; }
-      setAttach(null); setAttachState(""); setText("");
+      if (sending) return;
+      const job = attach;
+      setSending(true); setEmojiOpen(false); setAttachErr("");
+      if (job.done && !job.done.ok) upload(job); // a failed upload retries on send
+      let r = await job.promise;
+      let res = r && r.ok ? await onSend(caption, anon, r.imageId) : (r && r.error) || false;
+      if (res === "image-expired") { upload(job); r = await job.promise; res = r && r.ok ? await onSend(caption, anon, r.imageId) : (r && r.error) || false; }
+      setSending(false);
+      if (attachRef.current !== job) return;
+      if (res !== true) { setAttachErr(imageError(res)); return; }
+      dropAttach(); setBox("");
       return;
     }
     // An edit may empty a picture's caption, but never a text message.
-    if (!text.trim() && !(editing && editing.image)) return;
-    onSend(text.trim(), anon); setText(""); setEmojiOpen(false);
+    if (!caption && !(editing && editing.image)) return;
+    onSend(caption, anon); setBox(""); setEmojiOpen(false);
   };
-  const pickImage = async (e) => {
+  const pickImage = (e) => {
     const file = e.target.files && e.target.files[0];
     e.target.value = ""; // picking the same file again must still fire
-    if (!file) return;
-    setAttachState("preparing");
-    try { setAttach(await prepareImage(file)); setAttachState(""); }
-    catch { setAttach(null); setAttachState("error"); }
-    if (inputRef.current) inputRef.current.focus();
+    startAttach(file);
   };
-  const addEmoji = (e) => { setText((t) => t + e); if (inputRef.current) inputRef.current.focus(); };
-  // Fit the box to its text: measure from one row, then cap at six rows.
-  useLayoutEffect(() => {
+  const onPaste = (e) => {
+    const dt = e.clipboardData; if (!dt) return;
+    e.preventDefault();
+    const file = imageFrom(dt);
+    if (file) { if (!editing) startAttach(file); return; }
+    const t = dt.getData("text/plain"); if (t) insertText(t);
+  };
+  const onDrop = (e) => {
+    const dt = e.dataTransfer; if (!dt) return;
+    e.preventDefault();
+    const file = imageFrom(dt);
+    if (file) { if (!editing) startAttach(file); return; }
+    const t = dt.getData("text/plain"); if (t) insertText(t);
+  };
+  // Keyboards can also hand a picture over as an input event (no paste event).
+  useEffect(() => {
     const el = inputRef.current; if (!el) return;
-    const max = COMPOSER_LINE * COMPOSER_ROWS + COMPOSER_PAD * 2 + 2;
-    el.style.height = "auto";
-    // An empty box is always one row: a long placeholder must not wrap and grow it.
-    const want = text ? el.scrollHeight + 2 : COMPOSER_LINE + COMPOSER_PAD * 2 + 2; // + the 1px top and bottom border
-    el.style.height = Math.min(want, max) + "px";
-    el.style.overflowY = want > max ? "auto" : "hidden";
-  }, [text]);
+    const onBefore = (e) => {
+      const file = imageFrom(e.dataTransfer);
+      if (file) { e.preventDefault(); if (!editing) startAttach(file); }
+    };
+    el.addEventListener("beforeinput", onBefore);
+    return () => el.removeEventListener("beforeinput", onBefore);
+  });
+  useEffect(() => () => { const a = attachRef.current; if (a && a.previewUrl) URL.revokeObjectURL(a.previewUrl); }, []);
+
   const editKey = editing ? editing._key : null;
   useEffect(() => {
-    if (editKey) { setText(editing.text || ""); setEmojiOpen(false); if (inputRef.current) inputRef.current.focus(); }
-    else if (wasEditing.current) setText("");
+    if (editKey) { setEmojiOpen(false); if (inputRef.current) inputRef.current.focus(); setBox(editing.text || ""); }
+    else if (wasEditing.current) setBox("");
     wasEditing.current = !!editKey;
   }, [editKey]);
   useEffect(() => {
@@ -668,38 +804,46 @@ function Composer({ me, onSend, placeholder, editing, allowImage }) {
     document.addEventListener("click", close);
     return () => document.removeEventListener("click", close);
   }, [emojiOpen]);
-  return <>{(attach || attachState === "error" || attachState === "preparing") && !editing && <div data-role="attach-bar" style={S.attachBar}>
-    {attach && <img src={attach.dataUrl} alt="Picture to send" style={S.attachThumb} />}
-    <div style={{ flex: 1, minWidth: 0, fontSize: 13, color: attachState === "error" ? "#f87171" : MUTED }}>
-      {attachState === "preparing" ? "Preparing picture…" : attachState === "sending" ? "Sending picture…" : attachState === "error" ? (attach ? "Could not send the picture. Try again." : "Could not read that picture.") : "Add a caption, or send the picture as is."}
-    </div>
-    {attachState !== "sending" && <button style={S.iconBtn} title="Remove picture" onClick={() => { setAttach(null); setAttachState(""); }}><X size={16} /></button>}
+  return <>{attach && !editing && <div data-role="attach-bar" style={S.attachBar}>
+    <img src={attach.previewUrl} alt="Picture to send" style={S.attachThumb} />
+    <div style={{ flex: 1, minWidth: 0, fontSize: 13, color: attachErr ? "#f87171" : MUTED }}>{attachErr || (sending ? "Sending…" : "")}</div>
+    {!sending && <button style={S.iconBtn} title="Remove picture" onClick={dropAttach}><X size={16} /></button>}
   </div>}
   <div style={S.composer}>
     {emojiOpen && <div data-role="emoji-panel" style={S.emojiPanel} onClick={(e) => e.stopPropagation()}>
-      {EMOJI.map((e) => <button key={e} style={S.emojiBtn} onClick={() => addEmoji(e)}>{e}</button>)}
+      {EMOJI.map((e) => <button key={e} style={S.emojiBtn} onMouseDown={(ev) => ev.preventDefault()} onClick={() => insertText(e)}>{e}</button>)}
     </div>}
     <div style={S.composerTools}>
       <button style={{ ...S.composerIcon, color: anon ? ACCENT : "#9fb0bd", ...(editing ? { opacity: .35, cursor: "default" } : {}) }} disabled={!!editing}
         title={editing ? "An edit keeps the message's name" : anon ? "Sending anonymously" : "Sending as " + me.username} onClick={() => setAnonOverride(!anon)}>{anon ? <EyeOff size={18} /> : <Eye size={18} />}</button>
-      <button style={{ ...S.composerIcon, color: emojiOpen ? ACCENT : "#9fb0bd" }} title="Emoji" onClick={(e) => { e.stopPropagation(); setEmojiOpen((v) => !v); }}><Smile size={18} /></button>
+      <button style={{ ...S.composerIcon, color: emojiOpen ? ACCENT : "#9fb0bd" }} title="Emoji" onMouseDown={(ev) => ev.preventDefault()} onClick={(e) => { e.stopPropagation(); setEmojiOpen((v) => !v); }}><Smile size={18} /></button>
       {allowImage && !editing && <button style={{ ...S.composerIcon, color: attach ? ACCENT : "#9fb0bd" }} title="Send a picture" onClick={() => fileRef.current && fileRef.current.click()}><ImagePlus size={18} /></button>}
       {allowImage && <input ref={fileRef} type="file" accept="image/*" data-role="image-input" style={{ display: "none" }} onChange={pickImage} />}
     </div>
-    <textarea ref={inputRef} rows={1} data-role="composer-input" style={S.composerInput} value={text} placeholder={placeholder} onChange={(e) => setText(e.target.value)}
-      onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !(e.nativeEvent && e.nativeEvent.isComposing)) { e.preventDefault(); send(); } }} />
-    <button style={S.sendBtn} title={editing ? "Save edit" : "Send"} onClick={send}>{editing ? <Check size={18} /> : <Send size={17} />}</button>
+    <div ref={inputRef} contentEditable suppressContentEditableWarning role="textbox" aria-multiline="true" aria-label={placeholder}
+      data-role="composer-input" data-placeholder={placeholder} data-empty={text ? "0" : "1"} style={S.composerInput}
+      onInput={sync} onPaste={onPaste} onDrop={onDrop}
+      onKeyDown={(e) => {
+        if (e.key !== "Enter" || (e.nativeEvent && e.nativeEvent.isComposing)) return;
+        e.preventDefault();
+        if (!e.shiftKey) return send();
+        let done = false;
+        try { done = document.execCommand("insertLineBreak"); } catch {}
+        if (!done) insertText("\n");
+        sync();
+      }} />
+    <button style={S.sendBtn} title={editing ? "Save edit" : "Send"} onMouseDown={(ev) => ev.preventDefault()} onClick={send}>{editing ? <Check size={18} /> : <Send size={17} />}</button>
   </div></>;
 }
 
-const senderLabel = (m) => m.system ? null : (m.anon ? anonLabel((m.author || "x") + (m.gid || "")) : m.authorName);
+const senderLabel = (m) => m.system ? null : (m.anon ? anonName(m.author, m.gid, m.ts) : m.authorName);
 // Telegram-style "who: what" line for a community card's newest message.
 const previewOf = (m, meKey) => m.system ? m.text : `${m.author === meKey ? "You" : (senderLabel(m) || "member")}: ${msgExcerpt(m)}`;
 // A long room mounts only the tail of its history; the rest stays one tap away.
 // Threads, reply previews and search still resolve against the full list.
 const WINDOW = 150;
 
-function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroupChange }) {
+function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroupChange, searchOpen, onCloseSearch }) {
   const prefix = msgPrefix(group.id);
   const [items, reload, mutate, ready] = useItems(prefix);
   const [shown, setShown] = useState(WINDOW);
@@ -785,6 +929,8 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
 
   const pins = group.pins || [];
   useEffect(() => { setPinIdx(0); }, [pins.length]);
+  // Closing the search bar also clears the search.
+  useEffect(() => { if (!searchOpen) setQuery(""); }, [searchOpen]);
   const trimmed = query.trim();
   // Search is executed by the server over the group's entire history, so it is
   // not limited to (or dependent on) what this client has loaded.
@@ -832,12 +978,19 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
     const r = await messageReact(session, group.id, m._key, emoji);
     if (r && r.ok && r.message) replaceLocal(m._key, { ...r.message, _key: m._key });
   };
-  const postMessage = async (text, anon, parent, image) => {
-    const r = await messageSend(session, group.id, text, anon, parent ? { key: parent._key } : null, image);
+  // Resolves to true, or to the server's error code (the composer retries an
+  // expired picture upload once).
+  const postMessage = async (text, anon, parent, imageId) => {
+    const r = await messageSend(session, group.id, text, anon, parent ? { key: parent._key } : null, imageId);
     if (r && r.ok && r.message) addLocal({ ...r.message, _key: r.key });
     reload();
-    return !!(r && r.ok);
+    return r && r.ok ? true : (r && r.error) || false;
   };
+  const uploadImage = useCallback(async (file) => {
+    let prep;
+    try { prep = await prepareImage(file); } catch (e) { return { ok: false, error: e.message }; }
+    return (await imageUpload(session, group.id, prep)) || { ok: false, error: "network" };
+  }, [session.key, session.sessionId, group.id]);
   // An edit changes the text in place; the server stamps `editedAt`, which
   // every client shows as "edited" beside the time.
   const saveEdit = async (m, text) => {
@@ -852,7 +1005,7 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
     // upload can be retried as the same reply.
     const parent = replyTo;
     if (!image) { setReplyTo(null); return postMessage(text, anon, parent); }
-    return postMessage(text, anon, parent, image).then((ok) => { if (ok) setReplyTo(null); return ok; });
+    return postMessage(text, anon, parent, image).then((res) => { if (res === true) setReplyTo(null); return res; });
   };
   // Replying and editing share the banner over the composer, so one cancels the other.
   const startReply = (m) => { setEditing(null); setReplyTo(m); };
@@ -890,11 +1043,11 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
   const shownCount = Math.max(shown, unseenIdx >= 0 ? items.length - unseenIdx + 20 : 0);
   const visible = items.length > shownCount ? items.slice(items.length - shownCount) : items;
   return <div style={S.chatArea}>
-    <div style={S.searchBar}>
+    {searchOpen && <div data-role="search-bar" style={S.searchBar}>
       <Search size={16} style={{ color: "#7b8a96", flexShrink: 0 }} />
-      <input style={S.searchInput} value={query} placeholder="Search all messages" onChange={(e) => setQuery(e.target.value)} />
-      {query && <button style={S.iconBtn} title="Clear search" onClick={() => setQuery("")}><X size={16} /></button>}
-    </div>
+      <input autoFocus style={S.searchInput} value={query} placeholder="Search all messages" onChange={(e) => setQuery(e.target.value)} />
+      <button style={S.iconBtn} title="Close search" onClick={onCloseSearch}><X size={16} /></button>
+    </div>}
     {!trimmed && pins.length > 0 && <button data-role="pin-bar" style={S.pinBar} onClick={cyclePin} title={pins.length > 1 ? "Pinned messages — tap for the next" : "Pinned message"}>
       <Pin size={15} style={{ color: ACCENT, flexShrink: 0 }} />
       <div style={{ flex: 1, minWidth: 0, textAlign: "left" }}>
@@ -906,13 +1059,12 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
     {trimmed ? <div style={S.messages}>
       <div style={{ ...S.muted, padding: "2px 4px" }}>{results === null ? "Searching…" : `${results.length} result${results.length === 1 ? "" : "s"} across the whole history`}</div>
       {results && results.map((r) => <button key={r.key} style={S.result} onClick={() => { setResults(null); setQuery(""); setJumpTo(r.id); }}>
-        <span style={{ color: SENDER, fontWeight: 600, fontSize: 13 }}>{r.anon ? anonLabel(r.author + group.id) : (r.authorName || "member")}</span>
+        <span style={{ color: SENDER, fontWeight: 600, fontSize: 13 }}>{r.anon ? anonName(r.author, group.id, r.ts) : (r.authorName || "member")}</span>
         <div style={S.resultText}>{r.text}</div>
         <div data-role="msg-stamp" style={S.stamp}>{fmtStamp(r.ts)}</div>
       </button>)}
       {results && results.length === 0 && <div style={S.empty}><p style={S.muted}>No messages match “{trimmed}”.</p></div>}
     </div> : <div ref={feedRef} onScroll={onFeedScroll} data-role="feed" data-unread-anchor={anchor || undefined} style={S.messages}>
-      <div data-role="retention-note" style={S.retentionNote}>Messages and pictures are deleted 30 days after they are sent.</div>
       {items.length === 0 && <div style={S.empty}><p style={S.muted}>{ready ? "Be the first to say hello 👋" : "Loading messages…"}</p></div>}
       {visible.length < items.length && <button data-role="show-earlier" style={S.showEarlier} onClick={() => setShown(shownCount + WINDOW)}>Show earlier messages</button>}
       {visible.map((m) => {
@@ -977,8 +1129,8 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
       </div>
       <button style={S.iconBtn} title="Cancel reply" onClick={() => setReplyTo(null)}><X size={16} /></button>
     </div>}
-    <Composer me={me} onSend={send} editing={editing} allowImage placeholder="Message the community…" />
-    {threadRoot && <ThreadModal root={threadRoot} items={items} byKey={byKey} me={me} onClose={() => setThreadRoot(null)} onReply={(t, a, img) => postMessage(t, a, threadRoot, img)} onOpenImage={setLightbox} />}
+    <Composer me={me} onSend={send} editing={editing} uploadImage={uploadImage} placeholder="Message the community…" />
+    {threadRoot && <ThreadModal root={threadRoot} items={items} byKey={byKey} me={me} onClose={() => setThreadRoot(null)} onReply={(t, a, img) => postMessage(t, a, threadRoot, img)} uploadImage={uploadImage} onOpenImage={setLightbox} />}
     {lightbox && lightbox.image && <Lightbox m={lightbox} onClose={() => setLightbox(null)} />}
   </div>;
 }
@@ -1054,7 +1206,7 @@ function ReplyPreview({ replyTo, byKey, mutedSet, revealed, onReveal }) {
 }
 
 // A whole reply chain, opened by "View message thread".
-function ThreadModal({ root, items, byKey, me, onClose, onReply, onOpenImage }) {
+function ThreadModal({ root, items, byKey, me, onClose, onReply, uploadImage, onOpenImage }) {
   const chain = [];
   const seen = new Set([root._key]); let frontier = [root._key];
   while (frontier.length) {
@@ -1078,7 +1230,7 @@ function ThreadModal({ root, items, byKey, me, onClose, onReply, onOpenImage }) 
         <Stamp m={m} />
       </div>)}
     </div>
-    <div style={{ marginTop: 10 }}><Composer me={me} onSend={(t, a, img) => onReply(t, a, img)} allowImage placeholder="Reply in this thread…" /></div>
+    <div style={{ marginTop: 10 }}><Composer me={me} onSend={(t, a, img) => onReply(t, a, img)} uploadImage={uploadImage} placeholder="Reply in this thread…" /></div>
   </Modal>;
 }
 
@@ -1382,7 +1534,9 @@ const S = {
   result: { display: "flex", flexDirection: "column", gap: 3, width: "100%", textAlign: "left", background: PANEL, border: `1px solid ${LINE}`, borderRadius: 12, padding: "10px 12px", color: TEXT, cursor: "pointer", fontFamily: "inherit" },
   resultText: { fontSize: 14, color: "#cdd9e1", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
   bubbleFlash: { boxShadow: `0 0 0 2px ${ACCENT}` },
-  composerInput: { flex: 1, minWidth: 0, display: "block", background: PANEL2, border: `1px solid ${LINE}`, color: TEXT, borderRadius: 20, padding: `${COMPOSER_PAD}px 16px`, outline: "none", fontSize: 15, lineHeight: `${COMPOSER_LINE}px`, fontFamily: "inherit", resize: "none", overflowY: "hidden", margin: 0 },
+  // contenteditable: it grows with its text, then scrolls past six lines.
+  composerInput: { position: "relative", flex: 1, minWidth: 0, display: "block", background: PANEL2, border: `1px solid ${LINE}`, color: TEXT, borderRadius: 20, padding: `${COMPOSER_PAD}px 16px`, outline: "none", fontSize: 15, lineHeight: `${COMPOSER_LINE}px`, fontFamily: "inherit", margin: 0,
+    minHeight: COMPOSER_LINE + COMPOSER_PAD * 2 + 2, maxHeight: COMPOSER_LINE * COMPOSER_ROWS + COMPOSER_PAD * 2 + 2, overflowY: "auto", whiteSpace: "pre-wrap", overflowWrap: "anywhere", cursor: "text", WebkitUserSelect: "text", userSelect: "text" },
   sendBtn: { background: ACCENT, color: "#04201d", border: "none", borderRadius: "50%", width: 40, height: 40, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
   post: { background: PANEL, border: `1px solid ${LINE}`, borderRadius: 16, padding: 14 },
   postTitle: { fontFamily: "'Fraunces', serif", fontSize: 18, fontWeight: 600, margin: "4px 0 6px" },
@@ -1400,8 +1554,7 @@ const S = {
   lightboxClose: { position: "absolute", top: 12, right: 12, background: "rgba(255,255,255,.12)", border: "none", color: TEXT, borderRadius: "50%", width: 40, height: 40, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" },
   lightboxCaption: { color: TEXT, fontSize: 15, maxWidth: 480, textAlign: "center", whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: 60, overflowY: "auto" },
   attachBar: { display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", background: PANEL, borderTop: `1px solid ${LINE}` },
-  attachThumb: { width: 48, height: 48, objectFit: "cover", borderRadius: 8, flexShrink: 0 },
-  retentionNote: { alignSelf: "center", fontSize: 11, color: MUTED, textAlign: "center", padding: "2px 10px 6px" },
+  attachThumb: { width: 48, height: 48, objectFit: "cover", borderRadius: 8, flexShrink: 0, background: PANEL2, border: `1px solid ${LINE}` },
   feedWrap: { position: "relative", flex: 1, display: "flex", flexDirection: "column", minHeight: 0 },
   scrollDown: { position: "absolute", right: 14, bottom: 14, zIndex: 35, width: 38, height: 38, borderRadius: "50%", background: PANEL, border: `1px solid ${LINE}`, color: ACCENT, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 6px 18px rgba(0,0,0,.45)" },
   groupCard: { display: "flex", alignItems: "center", gap: 12, background: PANEL, border: `1px solid ${LINE}`, borderRadius: 14, padding: 12, cursor: "pointer", color: TEXT },
@@ -1435,5 +1588,6 @@ const CSS = `
 .pulse { animation: p 1.2s ease-in-out infinite; color:${ACCENT}; }
 @keyframes p { 0%,100%{opacity:.3;} 50%{opacity:1;} }
 input::placeholder, textarea::placeholder { color:#54636e; }
+[data-role="composer-input"][data-empty="1"]::before { content: attr(data-placeholder); position: absolute; left: 16px; right: 16px; top: ${COMPOSER_PAD}px; color: #54636e; pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 `;
 window.CommunityChat = CommunityChat;

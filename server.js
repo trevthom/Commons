@@ -12,10 +12,12 @@ const MAX_BODY = 1e6; // 1 MB — reject absurd payloads before they hit memory
 // Pictures are stored as files, never inside data.json: every chat poll reads
 // message records, and a picture there would ride along with each full read.
 const IMAGE_DIR = process.env.IMAGE_DIR || path.join(__dirname, "images");
-const MAX_IMAGE = 3e6;         // decoded bytes; the client sends ~1600px JPEGs
-const MAX_IMAGE_BODY = 4.5e6;  // the base64 request that carries one
-// Chat messages (and their pictures) are deleted this long after they are sent.
+const MAX_IMAGE = 8e6;  // bytes; photos arrive as ~1600px JPEGs, GIFs as they are
+// Chat messages, forum posts and their pictures are deleted this long after
+// they are sent.
 const MESSAGE_TTL = 30 * 86400000;
+// An uploaded picture that no message claims within this time is deleted.
+const UPLOAD_TTL = 3600000;
 try { fs.mkdirSync(IMAGE_DIR, { recursive: true }); } catch {}
 
 // ===== STORE =====
@@ -92,6 +94,14 @@ const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; cha
   ".json": "application/json; charset=utf-8", ".css": "text/css; charset=utf-8", ".png": "image/png",
   ".svg": "image/svg+xml", ".ico": "image/x-icon", ".webmanifest": "application/manifest+json" };
 
+// A raw request body as a Buffer, or null once it passes `max` bytes.
+const readRaw = (req, max) => new Promise((r) => {
+  const chunks = []; let n = 0; let done = false;
+  const finish = (v) => { if (!done) { done = true; r(v); } };
+  req.on("data", (c) => { if (done) return; n += c.length; if (n > max) { finish(null); req.resume(); } else chunks.push(c); });
+  req.on("end", () => finish(Buffer.concat(chunks)));
+  req.on("error", () => finish(null));
+});
 const sendJSON = (res, code, obj) => { res.writeHead(code, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }); res.end(JSON.stringify(obj)); };
 const readBody = (req, max = MAX_BODY) => new Promise((r) => {
   let d = ""; let done = false;
@@ -141,12 +151,9 @@ const sniffImage = (b) => {
 };
 const imageFile = (img) => path.join(IMAGE_DIR, `${img.id}.${img.ext}`);
 const validImage = (img) => !!img && /^[0-9a-f]{24}$/.test(img.id || "") && !!IMAGE_TYPES[img.ext];
-// Decode and save; returns the message's `image` record, or an error code.
-const saveImage = (dataUrl, w, h) => {
-  const m = /^data:image\/[a-z+.-]+;base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl || ""));
-  if (!m) return { error: "bad-image" };
-  const buf = Buffer.from(m[1], "base64");
-  if (!buf.length || buf.length > MAX_IMAGE) return { error: "image-too-large" };
+// Save raw picture bytes; returns the `image` record, or an error code.
+const saveImage = (buf, w, h) => {
+  if (!buf || !buf.length || buf.length > MAX_IMAGE) return { error: "image-too-large" };
   const ext = sniffImage(buf);
   if (!ext) return { error: "bad-image" };
   const img = { id: crypto.randomBytes(12).toString("hex"), ext,
@@ -154,6 +161,10 @@ const saveImage = (dataUrl, w, h) => {
   try { fs.writeFileSync(imageFile(img), buf); } catch { return { error: "save-failed" }; }
   return { image: img };
 };
+// Pictures are uploaded as soon as they are picked, before the message is
+// sent, so pressing send only has to attach one. Until a message claims it, an
+// upload belongs to its uploader and community; unclaimed ones expire.
+const pendingImages = new Map(); // id -> { key, gid, image, at }
 const dropImage = (m) => { if (m && validImage(m.image)) fs.unlink(imageFile(m.image), () => {}); };
 // Remove a chat message with everything that hangs off it: its picture file
 // and any pin. Callers persist.
@@ -167,18 +178,32 @@ const dropMessage = (k) => {
 };
 
 // ===== 30-DAY EXPIRY =====
-// Every chat message, system notices included, is deleted 30 days after it
-// was sent. A sweep runs at start-up and then hourly, so nothing outlives its
-// 30 days by more than an hour. Forum posts are not affected.
+// Every chat message (system notices included) and every forum post (with its
+// replies) is deleted 30 days after it was sent. A sweep runs at start-up and
+// then hourly, so nothing outlives its 30 days by more than an hour. The same
+// sweep deletes uploads no message claimed, and any picture file that no
+// message refers to (left behind by a crash or a restart).
 const sweepExpired = () => atomic(() => {
   const cutoff = now() - MESSAGE_TTL;
   let n = 0;
   for (const k of Object.keys(store)) {
-    if (!k.startsWith("msg:")) continue;
     const m = store[k];
-    if (m && typeof m.ts === "number" && m.ts < cutoff) { dropMessage(k); n++; }
+    if (!m || typeof m.ts !== "number" || m.ts >= cutoff) continue;
+    if (k.startsWith("msg:")) { dropMessage(k); n++; }
+    else if (k.startsWith("post:")) { dropImage(m); delete store[k]; n++; }
   }
-  if (n) { persist(); console.log(`[commons] deleted ${n} message(s) older than 30 days`); }
+  if (n) { persist(); console.log(`[commons] deleted ${n} message(s) and post(s) older than 30 days`); }
+  const stale = now() - UPLOAD_TTL;
+  for (const [id, u] of pendingImages) if (u.at < stale) pendingImages.delete(id);
+  const used = new Set([...pendingImages.keys()]);
+  for (const v of Object.values(store)) if (v && v.image && v.image.id) used.add(v.image.id);
+  let files = [];
+  try { files = fs.readdirSync(IMAGE_DIR); } catch {}
+  for (const f of files) {
+    const id = f.split(".")[0];
+    if (used.has(id)) continue;
+    try { if (fs.statSync(path.join(IMAGE_DIR, f)).mtimeMs < stale) fs.unlinkSync(path.join(IMAGE_DIR, f)); } catch {}
+  }
 });
 sweepExpired();
 setInterval(sweepExpired, 3600000).unref();
@@ -188,7 +213,7 @@ const server = http.createServer(async (req, res) => {
   const p = url.pathname;
 
   if (req.method === "OPTIONS") {
-    res.writeHead(204, { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS", "Access-Control-Allow-Headers": "Content-Type" });
+    res.writeHead(204, { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS", "Access-Control-Allow-Headers": "Content-Type, X-Commons-Key, X-Commons-Session, X-Commons-Group" });
     return res.end();
   }
 
@@ -375,9 +400,9 @@ const server = http.createServer(async (req, res) => {
   // from the authenticated session, so neither the text nor the identity of a
   // post can be forged — there is no raw key-write path any more.
   // A message is text, a picture, or a picture with a caption. The picture
-  // rides in the same request as a data URL, so this body limit is larger.
+  // was uploaded first (/api/image/upload); `imageId` claims it.
   if (p === "/api/message/send" && req.method === "POST") {
-    const body = await readBody(req, MAX_IMAGE_BODY);
+    const body = await readBody(req);
     const key = normKey(body.key); const sessionId = body.sessionId;
     const gid = String(body.gid || "");
     const text = String(body.text || "").trim().slice(0, 4000);
@@ -386,12 +411,13 @@ const server = http.createServer(async (req, res) => {
       if (!sessionOk(key, sessionId)) return sendJSON(res, 200, { ok: false, error: "auth" });
       const g = store[groupKey(gid)];
       if (!g || !g.members[key]) return sendJSON(res, 200, { ok: false, error: "not-member" });
-      if (!text && !body.image) return sendJSON(res, 200, { ok: false, error: "empty" });
+      if (!text && !body.imageId) return sendJSON(res, 200, { ok: false, error: "empty" });
       let image = null;
-      if (body.image) {
-        const saved = saveImage(body.image, body.imageW, body.imageH);
-        if (saved.error) return sendJSON(res, 200, { ok: false, error: saved.error });
-        image = saved.image;
+      if (body.imageId) {
+        const up = pendingImages.get(String(body.imageId));
+        if (!up || up.key !== key || up.gid !== gid) return sendJSON(res, 200, { ok: false, error: "image-expired" });
+        pendingImages.delete(String(body.imageId));
+        image = up.image;
       }
       const id = newId(), ts = now();
       const msg = { id, ts, text, anon, author: key, authorName: memberName(g, key), gid };
@@ -632,6 +658,24 @@ const server = http.createServer(async (req, res) => {
   if (p === "/api/list") {
     const prefix = url.searchParams.get("prefix") || "";
     return sendJSON(res, 200, { keys: Object.keys(store).filter((k) => k.startsWith(prefix) && !isAccountKey(k)), prefix });
+  }
+
+  // Upload one picture as raw bytes. The credentials ride in headers (not the
+  // URL, which proxies log). Only a member of the community may upload.
+  if (p === "/api/image/upload" && req.method === "POST") {
+    const key = normKey(req.headers["x-commons-key"]); const sessionId = String(req.headers["x-commons-session"] || "");
+    const gid = String(req.headers["x-commons-group"] || "");
+    const buf = await readRaw(req, MAX_IMAGE);
+    return atomic(() => {
+      if (!sessionOk(key, sessionId)) return sendJSON(res, 200, { ok: false, error: "auth" });
+      const g = store[groupKey(gid)];
+      if (!g || !g.members[key]) return sendJSON(res, 200, { ok: false, error: "not-member" });
+      if (!buf) return sendJSON(res, 200, { ok: false, error: "image-too-large" });
+      const saved = saveImage(buf, url.searchParams.get("w"), url.searchParams.get("h"));
+      if (saved.error) return sendJSON(res, 200, { ok: false, error: saved.error });
+      pendingImages.set(saved.image.id, { key, gid, image: saved.image, at: now() });
+      sendJSON(res, 200, { ok: true, imageId: saved.image.id, image: saved.image });
+    });
   }
 
   // Pictures: /api/image/<24-hex id>.<ext>. The name is fixed by the server,
