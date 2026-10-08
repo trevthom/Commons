@@ -9,6 +9,14 @@ const PORT = process.env.PORT || 8080;
 const PUBLIC = path.join(__dirname, "public");
 const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, "data.json");
 const MAX_BODY = 1e6; // 1 MB — reject absurd payloads before they hit memory
+// Pictures are stored as files, never inside data.json: every chat poll reads
+// message records, and a picture there would ride along with each full read.
+const IMAGE_DIR = process.env.IMAGE_DIR || path.join(__dirname, "images");
+const MAX_IMAGE = 3e6;         // decoded bytes; the client sends ~1600px JPEGs
+const MAX_IMAGE_BODY = 4.5e6;  // the base64 request that carries one
+// Chat messages (and their pictures) are deleted this long after they are sent.
+const MESSAGE_TTL = 30 * 86400000;
+try { fs.mkdirSync(IMAGE_DIR, { recursive: true }); } catch {}
 
 // ===== STORE =====
 // Loading never destroys data: a file we cannot parse is moved aside rather
@@ -85,10 +93,10 @@ const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; cha
   ".svg": "image/svg+xml", ".ico": "image/x-icon", ".webmanifest": "application/manifest+json" };
 
 const sendJSON = (res, code, obj) => { res.writeHead(code, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }); res.end(JSON.stringify(obj)); };
-const readBody = (req) => new Promise((r) => {
+const readBody = (req, max = MAX_BODY) => new Promise((r) => {
   let d = ""; let done = false;
   const finish = (v) => { if (!done) { done = true; r(v); } };
-  req.on("data", (c) => { d += c; if (d.length > MAX_BODY) finish({}); });
+  req.on("data", (c) => { d += c; if (d.length > max) finish({}); });
   req.on("end", () => { try { finish(JSON.parse(d || "{}")); } catch { finish({}); } });
   req.on("error", () => finish({}));
 });
@@ -117,6 +125,63 @@ const memberName = (g, key) => (g && g.members[key] && g.members[key].username) 
 // store can never accumulate arbitrary keys. Keep in sync with `REACTIONS` in
 // src/app.src.jsx (the first five are the quick bar).
 const REACTIONS = ["👍", "👎", "❤️", "🔥", "💯", "😂", "😬", "🤡", "🤨", "🤔", "👀", "🫡", "🫠", "😍", "🤯", "😡", "🥴", "🤝", "💪"];
+
+// ===== PICTURES =====
+// A picture arrives as a data URL. Only real JPEG, PNG, WebP and GIF bytes are
+// kept (checked by their magic numbers, never by the claimed type), so an
+// upload can never be served back as HTML or SVG. The random id is the file
+// name and the capability to read it, like a group id.
+const IMAGE_TYPES = { jpg: "image/jpeg", png: "image/png", webp: "image/webp", gif: "image/gif" };
+const sniffImage = (b) => {
+  if (b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "jpg";
+  if (b.length > 8 && b.slice(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "png";
+  if (b.length > 12 && b.toString("ascii", 0, 4) === "RIFF" && b.toString("ascii", 8, 12) === "WEBP") return "webp";
+  if (b.length > 6 && b.toString("ascii", 0, 4) === "GIF8") return "gif";
+  return null;
+};
+const imageFile = (img) => path.join(IMAGE_DIR, `${img.id}.${img.ext}`);
+const validImage = (img) => !!img && /^[0-9a-f]{24}$/.test(img.id || "") && !!IMAGE_TYPES[img.ext];
+// Decode and save; returns the message's `image` record, or an error code.
+const saveImage = (dataUrl, w, h) => {
+  const m = /^data:image\/[a-z+.-]+;base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl || ""));
+  if (!m) return { error: "bad-image" };
+  const buf = Buffer.from(m[1], "base64");
+  if (!buf.length || buf.length > MAX_IMAGE) return { error: "image-too-large" };
+  const ext = sniffImage(buf);
+  if (!ext) return { error: "bad-image" };
+  const img = { id: crypto.randomBytes(12).toString("hex"), ext,
+    w: Math.max(1, Math.min(10000, Math.round(Number(w) || 0))) || 1, h: Math.max(1, Math.min(10000, Math.round(Number(h) || 0))) || 1 };
+  try { fs.writeFileSync(imageFile(img), buf); } catch { return { error: "save-failed" }; }
+  return { image: img };
+};
+const dropImage = (m) => { if (m && validImage(m.image)) fs.unlink(imageFile(m.image), () => {}); };
+// Remove a chat message with everything that hangs off it: its picture file
+// and any pin. Callers persist.
+const dropMessage = (k) => {
+  const m = store[k]; if (!m) return;
+  dropImage(m);
+  delete store[k];
+  const gid = k.split(":")[1];
+  const g = store[groupKey(gid)];
+  if (g && Array.isArray(g.pins)) g.pins = g.pins.filter((pin) => pin.key !== k);
+};
+
+// ===== 30-DAY EXPIRY =====
+// Every chat message, system notices included, is deleted 30 days after it
+// was sent. A sweep runs at start-up and then hourly, so nothing outlives its
+// 30 days by more than an hour. Forum posts are not affected.
+const sweepExpired = () => atomic(() => {
+  const cutoff = now() - MESSAGE_TTL;
+  let n = 0;
+  for (const k of Object.keys(store)) {
+    if (!k.startsWith("msg:")) continue;
+    const m = store[k];
+    if (m && typeof m.ts === "number" && m.ts < cutoff) { dropMessage(k); n++; }
+  }
+  if (n) { persist(); console.log(`[commons] deleted ${n} message(s) older than 30 days`); }
+});
+sweepExpired();
+setInterval(sweepExpired, 3600000).unref();
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -298,7 +363,7 @@ const server = http.createServer(async (req, res) => {
       if (g.ownerKey !== ownerKey) return sendJSON(res, 200, { ok: false, error: "not-owner" });
       // remove the group doc + all its messages and forum posts
       for (const k of Object.keys(store)) {
-        if (k === groupKey(gid) || k.startsWith(`msg:${gid}:`) || k.startsWith(`post:${gid}:`)) delete store[k];
+        if (k === groupKey(gid) || k.startsWith(`msg:${gid}:`) || k.startsWith(`post:${gid}:`)) { dropImage(store[k]); delete store[k]; }
       }
       persist();
       sendJSON(res, 200, { ok: true });
@@ -309,8 +374,10 @@ const server = http.createServer(async (req, res) => {
   // Messages, posts and replies are only ever written here. The author is taken
   // from the authenticated session, so neither the text nor the identity of a
   // post can be forged — there is no raw key-write path any more.
+  // A message is text, a picture, or a picture with a caption. The picture
+  // rides in the same request as a data URL, so this body limit is larger.
   if (p === "/api/message/send" && req.method === "POST") {
-    const body = await readBody(req);
+    const body = await readBody(req, MAX_IMAGE_BODY);
     const key = normKey(body.key); const sessionId = body.sessionId;
     const gid = String(body.gid || "");
     const text = String(body.text || "").trim().slice(0, 4000);
@@ -319,9 +386,16 @@ const server = http.createServer(async (req, res) => {
       if (!sessionOk(key, sessionId)) return sendJSON(res, 200, { ok: false, error: "auth" });
       const g = store[groupKey(gid)];
       if (!g || !g.members[key]) return sendJSON(res, 200, { ok: false, error: "not-member" });
-      if (!text) return sendJSON(res, 200, { ok: false, error: "empty" });
+      if (!text && !body.image) return sendJSON(res, 200, { ok: false, error: "empty" });
+      let image = null;
+      if (body.image) {
+        const saved = saveImage(body.image, body.imageW, body.imageH);
+        if (saved.error) return sendJSON(res, 200, { ok: false, error: saved.error });
+        image = saved.image;
+      }
       const id = newId(), ts = now();
       const msg = { id, ts, text, anon, author: key, authorName: memberName(g, key), gid };
+      if (image) msg.image = image;
       // A reply may only point at a message that really exists in this group.
       if (body.replyTo && typeof body.replyTo === "object") {
         const pk = String(body.replyTo.key || "");
@@ -345,9 +419,8 @@ const server = http.createServer(async (req, res) => {
       if (!msgKey.startsWith(`msg:${gid}:general:`) || !store[msgKey]) return sendJSON(res, 200, { ok: false, error: "not-found" });
       const m = store[msgKey];
       if (m.author !== key && !isAdminOf(g, key)) return sendJSON(res, 200, { ok: false, error: "not-allowed" });
-      delete store[msgKey];
-      // A pin does not outlive its message.
-      if (Array.isArray(g.pins)) g.pins = g.pins.filter((pin) => pin.key !== msgKey);
+      // A pin (and a picture file) does not outlive its message.
+      dropMessage(msgKey);
       persist();
       sendJSON(res, 200, { ok: true });
     });
@@ -399,7 +472,7 @@ const server = http.createServer(async (req, res) => {
       if (!msgKey.startsWith(`msg:${gid}:general:`) || !store[msgKey] || store[msgKey].system) return sendJSON(res, 200, { ok: false, error: "not-found" });
       const m = store[msgKey];
       if (m.author !== key) return sendJSON(res, 200, { ok: false, error: "forbidden" });
-      if (!text) return sendJSON(res, 200, { ok: false, error: "empty" });
+      if (!text && !m.image) return sendJSON(res, 200, { ok: false, error: "empty" });
       if (text !== m.text) { m.text = text; m.editedAt = now(); m.updatedAt = m.editedAt; persist(); }
       sendJSON(res, 200, { ok: true, key: msgKey, message: m });
     });
@@ -559,6 +632,17 @@ const server = http.createServer(async (req, res) => {
   if (p === "/api/list") {
     const prefix = url.searchParams.get("prefix") || "";
     return sendJSON(res, 200, { keys: Object.keys(store).filter((k) => k.startsWith(prefix) && !isAccountKey(k)), prefix });
+  }
+
+  // Pictures: /api/image/<24-hex id>.<ext>. The name is fixed by the server,
+  // so it can never point outside IMAGE_DIR.
+  const im = /^\/api\/image\/([0-9a-f]{24})\.(jpg|png|webp|gif)$/.exec(p);
+  if (im && req.method === "GET") {
+    return fs.readFile(path.join(IMAGE_DIR, `${im[1]}.${im[2]}`), (err, buf) => {
+      if (err) return sendJSON(res, 404, { error: "not-found" });
+      res.writeHead(200, { "Content-Type": IMAGE_TYPES[im[2]], "Cache-Control": "private, max-age=2592000, immutable", "X-Content-Type-Options": "nosniff" });
+      res.end(buf);
+    });
   }
 
   // Any other /api/ path is a JSON 404 — it must never fall through to the

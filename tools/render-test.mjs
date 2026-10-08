@@ -148,7 +148,7 @@ await sleep(200);
 check("the invite modal closed", !document.querySelector(".sheet"));
 
 // --- search filters messages ---
-const composer = inputByPlaceholder("Message the whole community…");
+const composer = inputByPlaceholder("Message the community…");
 setInput(composer, "hello world");
 composer.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 await sleep(600);
@@ -178,7 +178,7 @@ const fireBtn = [...document.querySelectorAll("button")].find((b) => b.textConte
 check("the palette renders emoji", !!fireBtn);
 fireBtn.click();
 await sleep(150);
-const composerEmoji = inputByPlaceholder("Message the whole community…");
+const composerEmoji = inputByPlaceholder("Message the community…");
 check("clicking an emoji appends it to the composer", (composerEmoji.value || "").includes("🔥"), composerEmoji.value);
 setInput(composerEmoji, "emoji test 🔥");
 composerEmoji.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
@@ -186,7 +186,7 @@ await sleep(1500);
 check("an emoji message was sent", /emoji test 🔥/.test(screen()));
 
 // --- the message box is a growing textarea: Shift+Enter is a new line ---
-const box = inputByPlaceholder("Message the whole community…");
+const box = inputByPlaceholder("Message the community…");
 check("the message box is a textarea", !!box && box.tagName === "TEXTAREA");
 setInput(box, "line one");
 box.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true }));
@@ -204,7 +204,7 @@ optsFor("emoji test 🔥").click();
 await sleep(150);
 check("your own message offers Edit message", click("Edit message"));
 await sleep(200);
-const editBox = inputByPlaceholder("Message the whole community…");
+const editBox = inputByPlaceholder("Message the community…");
 check("the edit banner opens with the text loaded", !!document.querySelector('[data-role="edit-banner"]') && editBox.value === "emoji test 🔥", editBox.value);
 setInput(editBox, "emoji test 🔥 changed");
 editBox.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
@@ -214,6 +214,30 @@ const editedRow = editedBubble && editedBubble.parentElement.parentElement;
 check("the edit replaced the text", !!editedRow && !document.querySelector('[data-role="edit-banner"]'));
 check("an edited message is marked edited", !!editedRow && !!editedRow.querySelector('[data-role="edited"]') && /edited/.test(editedRow.querySelector('[data-role="msg-stamp"]').textContent));
 check("an unedited message carries no edited mark", !optsFor("banana bread").parentElement.parentElement.querySelector('[data-role="edited"]'));
+
+// --- pictures: a picture button, a thumbnail in the bubble, a full-screen view ---
+check("the message box has a picture button", titled("Send a picture") && !!document.querySelector('[data-role="image-input"]'));
+check("the room says messages are deleted after 30 days", /deleted 30 days after/.test((document.querySelector('[data-role="retention-note"]') || {}).textContent || ""));
+{
+  // jsdom has no canvas to shrink a photo, so the picture goes in through the API.
+  const groups = await (await fetch(new URL("/api/mget?prefix=group:", BASE))).json();
+  const tv = groups.items.map(([, v]) => v).find((g) => g.name === "Testville" && g.members[persisted.key]);
+  const sess = JSON.parse(dom.window.localStorage.getItem("cc_session_v2"));
+  await fetch(new URL("/api/message/send", BASE), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+    key: sess.key, sessionId: sess.sessionId, gid: tv.id, text: "picture caption",
+    image: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", imageW: 400, imageH: 300 }) });
+}
+await sleep(3500);
+const picBtn = document.querySelector('[data-role="msg-image"]');
+check("a picture message shows its picture", !!picBtn && /\/api\/image\/[0-9a-f]{24}\.png$/.test(picBtn.querySelector("img").getAttribute("src")));
+check("the picture keeps its shape while it loads", !!picBtn && picBtn.querySelector("img").style.width === "260px" && picBtn.querySelector("img").style.height === "195px");
+picBtn && picBtn.click();
+await sleep(200);
+const lb = document.querySelector('[data-role="lightbox"]');
+check("tapping a picture opens it full screen", !!lb && !!lb.querySelector("img") && /picture caption/.test(lb.textContent));
+lb && lb.click();
+await sleep(200);
+check("tapping the full-screen picture closes it", !document.querySelector('[data-role="lightbox"]'));
 
 // --- per-message menu ---
 setInput(inputByPlaceholder("Search all messages"), "");
@@ -293,8 +317,8 @@ check("closing the menu releases the lifted row",
   [...document.querySelectorAll('[title="Message options"]')]
     .every((b) => b.parentElement.parentElement.parentElement.style.zIndex !== "40"));
 check("the reply banner names the parent author", /Replying to tester/.test(screen()));
-setInput(inputByPlaceholder("Message the whole community…"), "replying to hello");
-inputByPlaceholder("Message the whole community…").dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+setInput(inputByPlaceholder("Message the community…"), "replying to hello");
+inputByPlaceholder("Message the community…").dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 await sleep(1500);
 check("the reply was sent", /replying to hello/.test(screen()));
 const preview = previewFor("replying to hello");
@@ -470,8 +494,8 @@ check("another member's message offers no Edit", !/Edit message/.test(screen()))
 // reply to the other member first, so their message is part of a chain
 check("clicked Reply to the other member", click("Reply"));
 await sleep(150);
-setInput(inputByPlaceholder("Message the whole community…"), "reply to bob");
-inputByPlaceholder("Message the whole community…").dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+setInput(inputByPlaceholder("Message the community…"), "reply to bob");
+inputByPlaceholder("Message the community…").dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 await sleep(1500);
 check("the reply to the other member landed", /reply to bob/.test(screen()));
 check("its preview names the other member", !!previewFor("reply to bob") && /bob/.test(previewFor("reply to bob").textContent));

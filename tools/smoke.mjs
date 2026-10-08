@@ -155,6 +155,26 @@ const newAccount = async () => (await post("/api/account/create", {})).json;
   const afterEdit = await get(`/api/mget?prefix=${encodeURIComponent(`msg:${gid}:general:`)}&since=${edited.json.message.editedAt - 1}`);
   ok("an edited message comes through a delta read", afterEdit.json.items.some(([k, v]) => k === msgKey1 && v.text === "hello 👋🔥 again"));
 
+  // --- pictures: stored as files, checked by their bytes, deleted with the message ---
+  const PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+  const pic = await post("/api/message/send", { key: memberKey, sessionId: memberSid, gid, text: "", image: PNG, imageW: 1, imageH: 1 });
+  ok("a picture can be sent without a caption", pic.json && pic.json.ok && pic.json.message.image && pic.json.message.image.ext === "png" && pic.json.message.text === "", pic.json);
+  ok("the picture is not stored inside the message record", pic.json && !JSON.stringify(pic.json.message).includes("base64"));
+  const picUrl = pic.json && pic.json.message.image ? `/api/image/${pic.json.message.image.id}.${pic.json.message.image.ext}` : "/api/image/none";
+  const picGet = await fetch(BASE + picUrl);
+  ok("the picture is served with its real type", picGet.status === 200 && picGet.headers.get("content-type") === "image/png" && picGet.headers.get("x-content-type-options") === "nosniff");
+  const fakePic = await post("/api/message/send", { key: memberKey, sessionId: memberSid, gid, text: "x",
+    image: "data:image/png;base64," + Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>").toString("base64") });
+  ok("bytes that are not a real picture are rejected", fakePic.json && fakePic.json.error === "bad-image");
+  const strangerPic = await post("/api/message/send", { key: stranger.key, sessionId: stranger.sessionId, gid, image: PNG });
+  ok("a non-member cannot send a picture", strangerPic.json && strangerPic.json.error === "not-member");
+  const emptyCaption = await post("/api/message/edit", { key: memberKey, sessionId: memberSid, gid, msgKey: pic.json.key, text: "" });
+  ok("a picture's caption may be emptied by an edit", emptyCaption.json && emptyCaption.json.ok);
+  const picDel = await post("/api/message/delete", { key: memberKey, sessionId: memberSid, gid, msgKey: pic.json.key });
+  await new Promise((r) => setTimeout(r, 150));
+  ok("deleting a picture message deletes the file", picDel.json && picDel.json.ok && (await fetch(BASE + picUrl)).status === 404);
+  ok("an unknown picture path is a JSON 404", (await get("/api/image/../../data.json")).status === 404);
+
   // --- search runs server-side over the whole history ---
   const search = await post("/api/message/search", { key: memberKey, sessionId: memberSid, gid, q: "🔥" });
   ok("search finds a message by emoji", search.json && search.json.ok && search.json.results.length === 1 && search.json.results[0].key === msgKey1);

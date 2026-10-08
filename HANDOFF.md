@@ -27,7 +27,9 @@ Any instructions elsewhere describing TanStack Start, Vite, Convex, or shadcn
 | `public/*.min.js`, `lucide.js`, `qrcode.min.js` | Vendored libraries. Do not hand-edit. |
 | `tools/smoke.mjs` | Dependency-free API test (needs a running server). |
 | `tools/render-test.mjs` | Loads the real page in jsdom and drives sign-up, community creation, invites, server-backed search, the Settings sheets and login key, the emoji picker, the growing message box, the message menu, editing, replies, pinning, muting, and the Forum tab. |
+| `tools/expiry-test.mjs` | Starts its own server on a seeded store and checks the 30-day message expiry. |
 | `data.json` | Runtime database. **Never commit** (gitignored). |
+| `images/` | Picture files sent in chat (`IMAGE_DIR` env overrides). **Never commit** (gitignored). |
 
 ## Build & run
 
@@ -47,6 +49,7 @@ Verification (with a server running):
 ```bash
 node tools/smoke.mjs http://localhost:8080      # API + access guards
 node tools/render-test.mjs http://localhost:8080 # mounts the UI and signs up
+node tools/expiry-test.mjs                       # starts its own server; checks 30-day expiry
 ```
 
 On Freebuff, the managed preview runs `node server.js` on port 8080; start it
@@ -61,7 +64,7 @@ with `freebuff-preview start`.
 | --- | --- |
 | `account:<16-char key>` | `{ key, createdAt, sessionId }` — **the login credential itself** |
 | `group:<id>` | `{ id, name, createdAt, ownerKey, admins[], members{key:{username,joinedAt,lastNameChange}}, usernames{lowercased→key}, banned[], invite, inviteOnce, pins[] }` |
-| `msg:<gid>:general:<ts>:<uid>` | `{ id, ts, text, anon, author, authorName, gid, replyTo?, reactions?, editedAt?, updatedAt? }` (or `{ system:true, text }`) |
+| `msg:<gid>:general:<ts>:<uid>` | `{ id, ts, text, anon, author, authorName, gid, replyTo?, image?, reactions?, editedAt?, updatedAt? }` (or `{ system:true, text }`) |
 | `post:<gid>:<ts>:<uid>` | `{ id, ts, title, text, anon, author, authorName, gid, replies[] }` |
 
 Accounts are anonymous login keys; there is no email/password and no recovery.
@@ -106,6 +109,8 @@ Content — authenticated; **the server sets `author`/`authorName` from the sess
 
 - `POST /api/message/send` `{ key, sessionId, gid, text, anon, replyTo? }` → `{ ok, key, message }`
 - `POST /api/message/delete` `{ key, sessionId, gid, msgKey }` — author or admin
+- `POST /api/message/send` may carry `image` (a data URL, up to 3 MB decoded) plus `imageW`/`imageH`; `text` may then be empty. The server keeps only real JPEG/PNG/WebP/GIF bytes (checked by magic number, never by the claimed type), writes the file to `images/<24-hex id>.<ext>`, and stores `image: { id, ext, w, h }` on the message. The picture is **never** stored in `data.json`, since every poll reads message records.
+- `GET  /api/image/<id>.<ext>` → the picture file (`nosniff`, long private cache). The random id is the capability, like a group id. Deleting a message, deleting its group, or expiry deletes the file.
 - `POST /api/message/edit` `{ key, sessionId, gid, msgKey, text }` → `{ ok, key, message }` — **author only** (admins may delete, never rewrite); replaces `text`, stamps `editedAt` and bumps `updatedAt`
 - `POST /api/message/react` `{ key, sessionId, gid, msgKey, emoji }` → `{ ok, key, message }` — any member; sets the caller's one reaction (a different emoji replaces it, the same emoji removes it), only accepts the fixed `REACTIONS` set, and bumps `updatedAt`
 - `POST /api/message/search` `{ key, sessionId, gid, q }` → `{ ok, results[], total }` — scans the whole history server-side
@@ -267,6 +272,18 @@ Reads — open; a group id or invite is the capability:
   button stay put while the box grows upward; the emoji panel opens above it.
   Message text renders with `S.msgText` (`white-space: pre-wrap`), so line
   breaks survive.
+- **30-day expiry**: every chat message (system notices included) is deleted
+  30 days after its `ts`, with its picture file and any pin. `sweepExpired` in
+  `server.js` runs at start-up and hourly. Forum posts are **not** affected.
+  The room shows this at the top of the feed (`data-role="retention-note"`).
+- **Pictures**: the General composer (and the thread composer) has a picture
+  button (`title="Send a picture"`, hidden `data-role="image-input"`).
+  `prepareImage` shrinks the photo to at most 1600px and re-encodes it as JPEG
+  on a canvas before sending; the text becomes an optional caption. The bubble
+  shows `MsgImage` (`data-role="msg-image"`, sized from the stored `w`/`h` so
+  the feed does not jump), and a tap opens `Lightbox` (`data-role="lightbox"`,
+  fixed full-screen; a tap, the X or Escape closes it). Previews of a picture
+  without a caption read "📷 Photo" (`msgExcerpt`).
 - **Editing**: the author's message menu has "Edit message". It opens an
   "Editing message" banner (`data-role="edit-banner"`, which replaces any reply
   banner) and loads the text into the box; the send button becomes a check and
@@ -303,7 +320,7 @@ Reads — open; a group id or invite is the capability:
   opens upward instead of being clipped by the feed's edge and covered by the
   composer.
 - After changing any file in `public/`, **bump `CACHE` in `public/sw.js`**
-  (currently `commons-v13`; go to `commons-v14`, …) so installed clients drop the
+  (currently `commons-v14`; go to `commons-v15`, …) so installed clients drop the
   old shell. The worker is network-first now, so the bump mainly guarantees
   eviction.
 
