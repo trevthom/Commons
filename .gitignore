@@ -3,3 +3,4 @@ data.json
 data.json.tmp
 data.json.corrupt-*
 .DS_Store
+images/

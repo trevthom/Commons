@@ -2,7 +2,7 @@ const { useState, useEffect, useLayoutEffect, useRef, useCallback } = React;
 const {
   Users, MapPin, Shield, Send, Eye, EyeOff, Link2, QrCode, Search,
   X, Trash2, UserMinus, Crown, LogIn, Plus, Copy, Check, MessageSquare, ChevronLeft, Ban, Key, LogOut,
-  MoreVertical, CornerUpLeft, Bell, BellOff, Smile, Pin, PinOff, ChevronDown, Settings, Pencil
+  MoreVertical, CornerUpLeft, Bell, BellOff, Smile, Pin, PinOff, ChevronDown, Settings, Pencil, ImagePlus
 } = lucide;
 
 // ---------- API ----------
@@ -18,7 +18,10 @@ const slist = async (prefix) => { const j = await api.get("/api/list?prefix=" + 
 // The server derives the author from { key, sessionId } and ignores anything
 // else we send, so a client can neither forge nor delete somebody else's post.
 const auth = (s, extra) => ({ key: s.key, sessionId: s.sessionId, ...extra });
-const messageSend = (s, gid, text, anon, replyTo) => api.post("/api/message/send", auth(s, { gid, text, anon, replyTo }));
+// `image` is { dataUrl, w, h } from prepareImage, or null.
+const messageSend = (s, gid, text, anon, replyTo, image) => api.post("/api/message/send", auth(s, {
+  gid, text, anon, replyTo, ...(image ? { image: image.dataUrl, imageW: image.w, imageH: image.h } : {}),
+}));
 const messageDelete = (s, gid, msgKey) => api.post("/api/message/delete", auth(s, { gid, msgKey }));
 const messageEdit = (s, gid, msgKey, text) => api.post("/api/message/edit", auth(s, { gid, msgKey, text }));
 const messageReact = (s, gid, msgKey, emoji) => api.post("/api/message/react", auth(s, { gid, msgKey, emoji }));
@@ -527,6 +530,51 @@ function useItems(prefix, ms = 2500) {
 
 // One-line preview text for reply chains (Telegram-style).
 const excerptOf = (t) => String(t || "").replace(/\s+/g, " ").trim().slice(0, 90);
+// The one-line stand-in for a message: its text, or "📷 Photo" for a picture
+// sent without a caption.
+const msgExcerpt = (m) => (m && m.text ? excerptOf(m.text) : m && m.image ? "📷 Photo" : "");
+
+// ---------- pictures ----------
+// A picked photo is shrunk before it is sent: at most 1600px on its long side,
+// re-encoded as JPEG, so a 12 MB phone photo travels as a few hundred KB. The
+// server stores it as a file and serves it at /api/image/<id>.<ext>.
+const IMAGE_MAX_SIDE = 1600;
+const imageUrl = (img) => `/api/image/${img.id}.${img.ext}`;
+async function prepareImage(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((res, rej) => { const i = new window.Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+    const scale = Math.min(1, IMAGE_MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+    const w = Math.max(1, Math.round(img.naturalWidth * scale)), h = Math.max(1, Math.round(img.naturalHeight * scale));
+    const c = document.createElement("canvas"); c.width = w; c.height = h;
+    const ctx = c.getContext("2d");
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h); // transparent PNGs get a white page, not black
+    ctx.drawImage(img, 0, 0, w, h);
+    return { dataUrl: c.toDataURL("image/jpeg", 0.82), w, h };
+  } finally { URL.revokeObjectURL(url); }
+}
+// A picture inside a message. It keeps its shape (up to a height limit) while
+// it loads, so the feed does not jump; a tap opens it full screen.
+function MsgImage({ img, onOpen, maxW = 260 }) {
+  const w = Math.min(maxW, img.w || maxW);
+  const h = Math.min(320, Math.round(w * (img.h || 1) / (img.w || 1)));
+  return <button data-role="msg-image" title="Open picture" style={S.msgImageBtn} onClick={(e) => { e.stopPropagation(); onOpen(); }}>
+    <img src={imageUrl(img)} alt="Picture" loading="lazy" style={{ ...S.msgImage, width: w, height: h }} />
+  </button>;
+}
+// Full-screen view of one picture. A tap anywhere, the X or Escape closes it.
+function Lightbox({ m, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return <div data-role="lightbox" style={S.lightbox} onClick={onClose}>
+    <button style={S.lightboxClose} title="Close picture" onClick={onClose}><X size={22} /></button>
+    <img src={imageUrl(m.image)} alt="Picture" style={S.lightboxImg} />
+    {m.text && <div style={S.lightboxCaption}>{m.text}</div>}
+  </div>;
+}
 
 // Read marks are per viewer, per community, and live only in this browser — the
 // same trade-off as mutes. A missing mark falls back to when the viewer joined,
@@ -561,22 +609,50 @@ const MORE_REACTIONS = REACTIONS.slice(5);
 // itself is not limited). Enter sends; Shift+Enter starts a new line.
 // `editing` loads one of the viewer's messages into the box; sending then
 // saves the edit, and the anonymity toggle is locked, since an edit keeps it.
+// With `allowImage`, a picture button attaches one photo; it shows above the
+// box until sent, and the text becomes its (optional) caption. `onSend`
+// receives (text, anon, image) and, for a picture, resolves to whether it sent.
 const COMPOSER_LINE = 20, COMPOSER_PAD = 9, COMPOSER_ROWS = 6;
-function Composer({ me, onSend, placeholder, editing }) {
+function Composer({ me, onSend, placeholder, editing, allowImage }) {
   const [text, setText] = useState("");
   const [anonOverride, setAnonOverride] = useState(null);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  const [attach, setAttach] = useState(null); // { dataUrl, w, h }
+  const [attachState, setAttachState] = useState(""); // "" | "preparing" | "sending" | "error"
   const inputRef = useRef(null);
+  const fileRef = useRef(null);
   const wasEditing = useRef(false);
   const anon = !!anonOverride;
-  const send = () => { if (!text.trim()) return; onSend(text.trim(), anon); setText(""); setEmojiOpen(false); };
+  const send = async () => {
+    if (attach && !editing) {
+      if (attachState === "sending" || attachState === "preparing") return;
+      setAttachState("sending"); setEmojiOpen(false);
+      const ok = await onSend(text.trim(), anon, attach);
+      if (ok === false) { setAttachState("error"); return; }
+      setAttach(null); setAttachState(""); setText("");
+      return;
+    }
+    // An edit may empty a picture's caption, but never a text message.
+    if (!text.trim() && !(editing && editing.image)) return;
+    onSend(text.trim(), anon); setText(""); setEmojiOpen(false);
+  };
+  const pickImage = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = ""; // picking the same file again must still fire
+    if (!file) return;
+    setAttachState("preparing");
+    try { setAttach(await prepareImage(file)); setAttachState(""); }
+    catch { setAttach(null); setAttachState("error"); }
+    if (inputRef.current) inputRef.current.focus();
+  };
   const addEmoji = (e) => { setText((t) => t + e); if (inputRef.current) inputRef.current.focus(); };
   // Fit the box to its text: measure from one row, then cap at six rows.
   useLayoutEffect(() => {
     const el = inputRef.current; if (!el) return;
     const max = COMPOSER_LINE * COMPOSER_ROWS + COMPOSER_PAD * 2 + 2;
     el.style.height = "auto";
-    const want = el.scrollHeight + 2; // + the 1px top and bottom border
+    // An empty box is always one row: a long placeholder must not wrap and grow it.
+    const want = text ? el.scrollHeight + 2 : COMPOSER_LINE + COMPOSER_PAD * 2 + 2; // + the 1px top and bottom border
     el.style.height = Math.min(want, max) + "px";
     el.style.overflowY = want > max ? "auto" : "hidden";
   }, [text]);
@@ -592,7 +668,14 @@ function Composer({ me, onSend, placeholder, editing }) {
     document.addEventListener("click", close);
     return () => document.removeEventListener("click", close);
   }, [emojiOpen]);
-  return <div style={S.composer}>
+  return <>{(attach || attachState === "error" || attachState === "preparing") && !editing && <div data-role="attach-bar" style={S.attachBar}>
+    {attach && <img src={attach.dataUrl} alt="Picture to send" style={S.attachThumb} />}
+    <div style={{ flex: 1, minWidth: 0, fontSize: 13, color: attachState === "error" ? "#f87171" : MUTED }}>
+      {attachState === "preparing" ? "Preparing picture…" : attachState === "sending" ? "Sending picture…" : attachState === "error" ? (attach ? "Could not send the picture. Try again." : "Could not read that picture.") : "Add a caption, or send the picture as is."}
+    </div>
+    {attachState !== "sending" && <button style={S.iconBtn} title="Remove picture" onClick={() => { setAttach(null); setAttachState(""); }}><X size={16} /></button>}
+  </div>}
+  <div style={S.composer}>
     {emojiOpen && <div data-role="emoji-panel" style={S.emojiPanel} onClick={(e) => e.stopPropagation()}>
       {EMOJI.map((e) => <button key={e} style={S.emojiBtn} onClick={() => addEmoji(e)}>{e}</button>)}
     </div>}
@@ -600,16 +683,18 @@ function Composer({ me, onSend, placeholder, editing }) {
       <button style={{ ...S.composerIcon, color: anon ? ACCENT : "#9fb0bd", ...(editing ? { opacity: .35, cursor: "default" } : {}) }} disabled={!!editing}
         title={editing ? "An edit keeps the message's name" : anon ? "Sending anonymously" : "Sending as " + me.username} onClick={() => setAnonOverride(!anon)}>{anon ? <EyeOff size={18} /> : <Eye size={18} />}</button>
       <button style={{ ...S.composerIcon, color: emojiOpen ? ACCENT : "#9fb0bd" }} title="Emoji" onClick={(e) => { e.stopPropagation(); setEmojiOpen((v) => !v); }}><Smile size={18} /></button>
+      {allowImage && !editing && <button style={{ ...S.composerIcon, color: attach ? ACCENT : "#9fb0bd" }} title="Send a picture" onClick={() => fileRef.current && fileRef.current.click()}><ImagePlus size={18} /></button>}
+      {allowImage && <input ref={fileRef} type="file" accept="image/*" data-role="image-input" style={{ display: "none" }} onChange={pickImage} />}
     </div>
     <textarea ref={inputRef} rows={1} data-role="composer-input" style={S.composerInput} value={text} placeholder={placeholder} onChange={(e) => setText(e.target.value)}
       onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !(e.nativeEvent && e.nativeEvent.isComposing)) { e.preventDefault(); send(); } }} />
     <button style={S.sendBtn} title={editing ? "Save edit" : "Send"} onClick={send}>{editing ? <Check size={18} /> : <Send size={17} />}</button>
-  </div>;
+  </div></>;
 }
 
 const senderLabel = (m) => m.system ? null : (m.anon ? anonLabel((m.author || "x") + (m.gid || "")) : m.authorName);
 // Telegram-style "who: what" line for a community card's newest message.
-const previewOf = (m, meKey) => m.system ? m.text : `${m.author === meKey ? "You" : (senderLabel(m) || "member")}: ${excerptOf(m.text)}`;
+const previewOf = (m, meKey) => m.system ? m.text : `${m.author === meKey ? "You" : (senderLabel(m) || "member")}: ${msgExcerpt(m)}`;
 // A long room mounts only the tail of its history; the rest stays one tap away.
 // Threads, reply previews and search still resolve against the full list.
 const WINDOW = 150;
@@ -622,6 +707,7 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
   const [results, setResults] = useState(null);
   const [replyTo, setReplyTo] = useState(null);
   const [editing, setEditing] = useState(null);
+  const [lightbox, setLightbox] = useState(null); // the message whose picture is open
   const [menuFor, setMenuFor] = useState(null);
   const [threadRoot, setThreadRoot] = useState(null);
   const [revealed, setRevealed] = useState(() => new Set());
@@ -746,10 +832,11 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
     const r = await messageReact(session, group.id, m._key, emoji);
     if (r && r.ok && r.message) replaceLocal(m._key, { ...r.message, _key: m._key });
   };
-  const postMessage = async (text, anon, parent) => {
-    const r = await messageSend(session, group.id, text, anon, parent ? { key: parent._key } : null);
+  const postMessage = async (text, anon, parent, image) => {
+    const r = await messageSend(session, group.id, text, anon, parent ? { key: parent._key } : null, image);
     if (r && r.ok && r.message) addLocal({ ...r.message, _key: r.key });
     reload();
+    return !!(r && r.ok);
   };
   // An edit changes the text in place; the server stamps `editedAt`, which
   // every client shows as "edited" beside the time.
@@ -759,9 +846,13 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
     const r = await messageEdit(session, group.id, m._key, text);
     if (r && r.ok && r.message) replaceLocal(m._key, { ...r.message, _key: m._key });
   };
-  const send = (text, anon) => {
+  const send = (text, anon, image) => {
     if (editing) return saveEdit(editing, text);
-    const parent = replyTo; setReplyTo(null); postMessage(text, anon, parent);
+    // A picture's reply target stays until it really sends, so a failed
+    // upload can be retried as the same reply.
+    const parent = replyTo;
+    if (!image) { setReplyTo(null); return postMessage(text, anon, parent); }
+    return postMessage(text, anon, parent, image).then((ok) => { if (ok) setReplyTo(null); return ok; });
   };
   // Replying and editing share the banner over the composer, so one cancels the other.
   const startReply = (m) => { setEditing(null); setReplyTo(m); };
@@ -792,7 +883,7 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
     setMenuUp(up);
     setMenuFor(m.id);
   };
-  const pinText = (pin) => { const m = byKey.get(pin.key); return m ? `${senderLabel(m)}: ${excerptOf(m.text)}` : "Deleted message"; };
+  const pinText = (pin) => { const m = byKey.get(pin.key); return m ? `${senderLabel(m)}: ${msgExcerpt(m)}` : "Deleted message"; };
   // Render only the newest slice of a long room; the window always stretches
   // to include the first unseen message, so opening still lands on it.
   const unseenIdx = items.findIndex((m) => !m.system && m.author !== session.key && m.ts > openSeen);
@@ -821,6 +912,7 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
       </button>)}
       {results && results.length === 0 && <div style={S.empty}><p style={S.muted}>No messages match “{trimmed}”.</p></div>}
     </div> : <div ref={feedRef} onScroll={onFeedScroll} data-role="feed" data-unread-anchor={anchor || undefined} style={S.messages}>
+      <div data-role="retention-note" style={S.retentionNote}>Messages and pictures are deleted 30 days after they are sent.</div>
       {items.length === 0 && <div style={S.empty}><p style={S.muted}>{ready ? "Be the first to say hello 👋" : "Loading messages…"}</p></div>}
       {visible.length < items.length && <button data-role="show-earlier" style={S.showEarlier} onClick={() => setShown(shownCount + WINDOW)}>Show earlier messages</button>}
       {visible.map((m) => {
@@ -858,7 +950,8 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
               onClose={() => setMenuFor(null)} onReply={() => startReply(m)} onEdit={() => startEdit(m)} onThread={() => openThread(m)}
               onToggleMute={() => onToggleMute(m.author)} onTogglePin={() => togglePin(m)} onDelete={() => del(m)} onReact={(emoji) => react(m, emoji)} />}
             {m.replyTo && <ReplyPreview replyTo={m.replyTo} byKey={byKey} mutedSet={mutedSet} revealed={revealed} onReveal={reveal} />}
-            <div style={S.msgText}>{m.text}</div>
+            {m.image && <MsgImage img={m.image} onOpen={() => setLightbox(m)} />}
+            {m.text && <div style={S.msgText}>{m.text}</div>}
             <Reactions msg={m} meKey={session.key} onToggle={(emoji) => react(m, emoji)} />
             <Stamp m={m} />
           </div>
@@ -872,7 +965,7 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
       <Pencil size={14} style={{ flexShrink: 0, color: ACCENT }} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={S.replyBannerName}>Editing message</div>
-        <div style={S.replyBannerText}>{excerptOf(editing.text)}</div>
+        <div style={S.replyBannerText}>{msgExcerpt(editing)}</div>
       </div>
       <button style={S.iconBtn} title="Cancel edit" onClick={() => setEditing(null)}><X size={16} /></button>
     </div>}
@@ -880,12 +973,13 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
       <CornerUpLeft size={14} style={{ flexShrink: 0, color: ACCENT }} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={S.replyBannerName}>Replying to {senderLabel(replyTo) || "message"}</div>
-        <div style={S.replyBannerText}>{excerptOf(replyTo.text)}</div>
+        <div style={S.replyBannerText}>{msgExcerpt(replyTo)}</div>
       </div>
       <button style={S.iconBtn} title="Cancel reply" onClick={() => setReplyTo(null)}><X size={16} /></button>
     </div>}
-    <Composer me={me} onSend={send} editing={editing} placeholder="Message the whole community…" />
-    {threadRoot && <ThreadModal root={threadRoot} items={items} byKey={byKey} me={me} onClose={() => setThreadRoot(null)} onReply={(t, a) => postMessage(t, a, threadRoot)} />}
+    <Composer me={me} onSend={send} editing={editing} allowImage placeholder="Message the community…" />
+    {threadRoot && <ThreadModal root={threadRoot} items={items} byKey={byKey} me={me} onClose={() => setThreadRoot(null)} onReply={(t, a, img) => postMessage(t, a, threadRoot, img)} onOpenImage={setLightbox} />}
+    {lightbox && lightbox.image && <Lightbox m={lightbox} onClose={() => setLightbox(null)} />}
   </div>;
 }
 
@@ -954,13 +1048,13 @@ function ReplyPreview({ replyTo, byKey, mutedSet, revealed, onReveal }) {
         : hiddenMuted
           ? <div style={{ ...S.replyPreviewName, color: MUTED }}>Muted — tap to show</div>
           : <div style={S.replyPreviewName}>{senderLabel(parent)}</div>}
-      {parent && !hiddenMuted && <div style={S.replyPreviewText}>{excerptOf(parent.text)}</div>}
+      {parent && !hiddenMuted && <div style={S.replyPreviewText}>{msgExcerpt(parent)}</div>}
     </div>
   </div>;
 }
 
 // A whole reply chain, opened by "View message thread".
-function ThreadModal({ root, items, byKey, me, onClose, onReply }) {
+function ThreadModal({ root, items, byKey, me, onClose, onReply, onOpenImage }) {
   const chain = [];
   const seen = new Set([root._key]); let frontier = [root._key];
   while (frontier.length) {
@@ -979,11 +1073,12 @@ function ThreadModal({ root, items, byKey, me, onClose, onReply }) {
           {i === 0 && <span style={{ ...S.pill, background: "#2dd4bf22", color: ACCENT, marginLeft: "auto" }}>ORIGINAL</span>}
         </div>
         {m.replyTo && <div style={{ fontSize: 11, color: MUTED, marginBottom: 2 }}>↩ {(() => { const par = byKey && byKey.get(m.replyTo.key); return par ? senderLabel(par) : "Deleted"; })()}</div>}
-        <div style={{ ...S.msgText, fontSize: 14 }}>{m.text}</div>
+        {m.image && <MsgImage img={m.image} maxW={220} onOpen={() => onOpenImage(m)} />}
+        {m.text && <div style={{ ...S.msgText, fontSize: 14 }}>{m.text}</div>}
         <Stamp m={m} />
       </div>)}
     </div>
-    <div style={{ marginTop: 10 }}><Composer me={me} onSend={(t, a) => onReply(t, a)} placeholder="Reply in this thread…" /></div>
+    <div style={{ marginTop: 10 }}><Composer me={me} onSend={(t, a, img) => onReply(t, a, img)} allowImage placeholder="Reply in this thread…" /></div>
   </Modal>;
 }
 
@@ -1297,6 +1392,16 @@ const S = {
   showEarlier: { alignSelf: "center", background: "transparent", border: `1px solid ${LINE}`, color: MUTED, borderRadius: 20, padding: "5px 14px", fontSize: 12, cursor: "pointer", fontFamily: "inherit" },
   bottomBar: { display: "flex", gap: 10, padding: 14, borderTop: `1px solid ${LINE}`, background: PANEL },
   badge: { background: ACCENT, color: "#04201d", fontWeight: 700, fontSize: 12, minWidth: 22, height: 22, padding: "0 7px", borderRadius: 11, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  msgImageBtn: { display: "block", padding: 0, margin: "2px 0 4px", border: "none", background: "transparent", cursor: "zoom-in", borderRadius: 10, overflow: "hidden", maxWidth: "100%" },
+  msgImage: { display: "block", maxWidth: "100%", objectFit: "cover", background: "rgba(255,255,255,.05)", borderRadius: 10 },
+  // Fixed, not absolute: it covers the whole window above every sheet.
+  lightbox: { position: "fixed", inset: 0, zIndex: 100, background: "rgba(0,0,0,.92)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 16, gap: 12, cursor: "zoom-out" },
+  lightboxImg: { maxWidth: "100%", maxHeight: "calc(100% - 70px)", objectFit: "contain", borderRadius: 6 },
+  lightboxClose: { position: "absolute", top: 12, right: 12, background: "rgba(255,255,255,.12)", border: "none", color: TEXT, borderRadius: "50%", width: 40, height: 40, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" },
+  lightboxCaption: { color: TEXT, fontSize: 15, maxWidth: 480, textAlign: "center", whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: 60, overflowY: "auto" },
+  attachBar: { display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", background: PANEL, borderTop: `1px solid ${LINE}` },
+  attachThumb: { width: 48, height: 48, objectFit: "cover", borderRadius: 8, flexShrink: 0 },
+  retentionNote: { alignSelf: "center", fontSize: 11, color: MUTED, textAlign: "center", padding: "2px 10px 6px" },
   feedWrap: { position: "relative", flex: 1, display: "flex", flexDirection: "column", minHeight: 0 },
   scrollDown: { position: "absolute", right: 14, bottom: 14, zIndex: 35, width: 38, height: 38, borderRadius: "50%", background: PANEL, border: `1px solid ${LINE}`, color: ACCENT, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 6px 18px rgba(0,0,0,.45)" },
   groupCard: { display: "flex", alignItems: "center", gap: 12, background: PANEL, border: `1px solid ${LINE}`, borderRadius: 14, padding: 12, cursor: "pointer", color: TEXT },
