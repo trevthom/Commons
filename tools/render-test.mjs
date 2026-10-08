@@ -157,6 +157,22 @@ document.querySelector(".sheet").querySelector("button").click();
 await sleep(200);
 check("the invite modal closed", !document.querySelector(".sheet"));
 
+// --- header: name + username left, member count in the middle ---
+{
+  // Name and username on the left; the member count in the middle opens the list.
+  const nameEl = document.querySelector('[data-role="group-name"]');
+  const header = document.querySelector('[data-role="group-header"]');
+  check("the community name and username share the left column", !!nameEl && nameEl.parentElement.contains(nameControl) && header.firstElementChild.contains(nameEl));
+  check("the member count is the header's middle column", !!header && header.children[1] === document.querySelector('[data-role="member-count"]') && header.style.gridTemplateColumns === "1fr auto 1fr");
+  document.querySelector('[data-role="member-count"]').click();
+  await sleep(300);
+  const rows = [...document.querySelectorAll('[data-role="member-row"]')];
+  check("tapping the member count lists the members", !!modal() && rows.length === 1 && /tester/.test(rows[0].textContent) && /\(you\)/.test(rows[0].textContent));
+  check("the member list marks the owner", rows.length === 1 && /OWNER/.test(rows[0].textContent));
+  modal().querySelector("button").click();
+  await sleep(200);
+}
+
 // --- search filters messages ---
 const composer = inputByPlaceholder("Message the community…");
 setInput(composer, "hello world");
@@ -399,6 +415,21 @@ await apiPost("/api/message/send", { key: bob.key, sessionId: bob.sessionId, gid
 await apiPost("/api/post/create", { key: bob.key, sessionId: bob.sessionId, gid: testGroup.id, text: "bob forum post" });
 await sleep(3500);
 check("the other member's message reached General", /from bob/.test(screen()));
+{
+  // Make bob an admin, then the list shows both, owner first, roles marked.
+  const sess = JSON.parse(dom.window.localStorage.getItem("cc_session_v2"));
+  await apiPost("/api/group/toggleadmin", { key: sess.key, sessionId: sess.sessionId, gid: testGroup.id, targetKey: bob.key });
+  await sleep(3500);
+  document.querySelector('[data-role="member-count"]').click();
+  await sleep(300);
+  const rows = [...document.querySelectorAll('[data-role="member-row"]')];
+  check("the member list shows every member, owner first", rows.length === 2 && /tester/.test(rows[0].textContent) && /bob/.test(rows[1].textContent), rows.map((r) => r.textContent).join(" | "));
+  check("the member list marks admins", rows.length === 2 && /OWNER/.test(rows[0].textContent) && /ADMIN/.test(rows[1].textContent));
+  modal().querySelector("button").click();
+  await sleep(200);
+  await apiPost("/api/group/toggleadmin", { key: sess.key, sessionId: sess.sessionId, gid: testGroup.id, targetKey: bob.key });
+  await sleep(3500);
+}
 
 // --- Telegram-style bubbles: width, alignment, exactly two colors ---
 const bubbleFor = (text) => {

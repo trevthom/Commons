@@ -84,6 +84,13 @@ Open the app in a browser, or install it as a PWA on a phone.
   share the session. Signing in with your key elsewhere, or the **Log out**
   button, is what ends it.
 
+## Members
+
+Inside a community, the community name and your username sit at the top left,
+and the member count sits in the middle. Tap the member count to see everyone
+in the community. The list shows the owner first, then the admins, then
+everyone else, and marks the owner and admins.
+
 ## Usernames
 
 - You choose a username **when you enter a community**. It's reserved to you

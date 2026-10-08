@@ -377,6 +377,7 @@ function GroupApp({ session, group, setGroup, tab, setTab, onLeave, onLogout }) 
   const [changingName, setChangingName] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [showMembers, setShowMembers] = useState(false);
   const me = group.members[session.key];
   const isOwner = group.ownerKey === session.key;
   const isAdmin = isOwner || (group.admins || []).includes(session.key);
@@ -400,17 +401,24 @@ function GroupApp({ session, group, setGroup, tab, setTab, onLeave, onLogout }) 
 
   return (
     <div style={S.screen}>
-      <div style={S.appHeader}>
-        <button style={S.iconBtn} title="Back to your communities" onClick={onLeave}><ChevronLeft size={20} /></button>
-        <div style={{ width: 32, flexShrink: 0 }} />{/* balances the two icons on the right */}
-        <div style={{ flex: 1, minWidth: 0, textAlign: "center", lineHeight: 1.25 }}>
-          <div style={{ fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{group.name}</div>
-          <div data-role="member-count" style={{ ...S.muted, fontSize: 12 }}>{memberCount} member{memberCount === 1 ? "" : "s"}</div>
-          <button style={{ ...S.nameBtn, textAlign: "center", maxWidth: "100%", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title="Change your username" onClick={() => setChangingName(true)}>{me.username} ✎{isOwner ? " · owner" : isAdmin ? " · admin" : ""}</button>
+      {/* Three columns: back + community name + your username on the left, the
+          member count in the exact middle (equal side columns), icons right. */}
+      <div data-role="group-header" style={S.groupHeader}>
+        <div style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0 }}>
+          <button style={S.iconBtn} title="Back to your communities" onClick={onLeave}><ChevronLeft size={20} /></button>
+          <div style={{ minWidth: 0, lineHeight: 1.25 }}>
+            <div data-role="group-name" style={{ fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{group.name}</div>
+            <button style={{ ...S.nameBtn, maxWidth: "100%", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" }} title="Change your username" onClick={() => setChangingName(true)}>{me.username} ✎{isOwner ? " · owner" : isAdmin ? " · admin" : ""}</button>
+          </div>
         </div>
-        <button style={{ ...S.iconBtn, color: searchOpen && tab === "general" ? ACCENT : TEXT }} title="Search messages"
-          onClick={() => { if (tab !== "general") { setTab("general"); setSearchOpen(true); } else setSearchOpen((v) => !v); }}><Search size={19} /></button>
-        <button style={S.iconBtn} title="Settings" onClick={() => setSettingsOpen(true)}><Settings size={19} /></button>
+        <button data-role="member-count" style={S.memberCountBtn} title="See members" onClick={() => setShowMembers(true)}>
+          <Users size={14} />{memberCount} member{memberCount === 1 ? "" : "s"}
+        </button>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 2 }}>
+          <button style={{ ...S.iconBtn, color: searchOpen && tab === "general" ? ACCENT : TEXT }} title="Search messages"
+            onClick={() => { if (tab !== "general") { setTab("general"); setSearchOpen(true); } else setSearchOpen((v) => !v); }}><Search size={19} /></button>
+          <button style={S.iconBtn} title="Settings" onClick={() => setSettingsOpen(true)}><Settings size={19} /></button>
+        </div>
       </div>
       <div style={S.tabs}>
         <button style={{ ...S.tab, ...(tab === "general" ? S.tabActive : {}) }} onClick={() => setTab("general")}><MessageSquare size={16} /> General</button>
@@ -423,11 +431,36 @@ function GroupApp({ session, group, setGroup, tab, setTab, onLeave, onLogout }) 
         { icon: <QrCode size={18} />, label: "Invite people", onClick: () => setShowInvite(true) },
         ...(isAdmin ? [{ icon: <Shield size={18} />, label: "Manage members", onClick: () => setShowAdmin(true) }] : []),
       ]} />}
+      {showMembers && <MembersModal group={group} meKey={session.key} onClose={() => setShowMembers(false)} />}
       {showInvite && <InviteModal group={group} session={session} onClose={() => setShowInvite(false)} onChange={reloadGroup} />}
       {showAdmin && isAdmin && <AdminModal session={session} group={group} isOwner={isOwner} onClose={() => setShowAdmin(false)} onChange={reloadGroup} onDeleted={onLeave} />}
       {changingName && <ChangeNameModal session={session} group={group} me={me} onClose={() => setChangingName(false)} onChanged={(g) => { setGroup(g); }} />}
     </div>
   );
+}
+
+// ---------- members ----------
+// Everyone in the community, opened from the member count in the header: the
+// owner first, then admins, then members, each group alphabetical. The sheet
+// scrolls when the list is long.
+function MembersModal({ group, meKey, onClose }) {
+  const admins = group.admins || [];
+  const rank = (k) => (k === group.ownerKey ? 0 : admins.includes(k) ? 1 : 2);
+  const list = Object.entries(group.members)
+    .map(([k, info]) => ({ k, name: (info && info.username) || "(no name yet)", rank: rank(k) }))
+    .sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+  return <Modal onClose={onClose} title={`Members · ${list.length}`}>
+    <div data-role="member-list" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {list.map((m) => <div key={m.k} data-role="member-row" style={S.memberRow}>
+        <div style={S.groupAvatar}>{m.name.slice(0, 1).toUpperCase()}</div>
+        <div style={{ flex: 1, minWidth: 0, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {m.name}{m.k === meKey && <span style={{ ...S.muted, fontWeight: 400 }}> (you)</span>}
+        </div>
+        {m.rank === 0 && <span data-role="role-badge" style={{ ...S.pill, background: "#fbbf2422", color: "#fbbf24", display: "inline-flex", alignItems: "center", gap: 4 }}><Crown size={11} /> OWNER</span>}
+        {m.rank === 1 && <span data-role="role-badge" style={{ ...S.pill, background: "#2dd4bf22", color: ACCENT, display: "inline-flex", alignItems: "center", gap: 4 }}><Shield size={11} /> ADMIN</span>}
+      </div>)}
+    </div>
+  </Modal>;
 }
 
 // ---------- settings ----------
@@ -1460,6 +1493,8 @@ const S = {
   ghost: { width: "100%", background: "transparent", color: MUTED, border: "none", padding: 10, cursor: "pointer", marginTop: 6 },
   toggleRow: { width: "100%", display: "flex", alignItems: "center", gap: 10, background: PANEL2, border: `1px solid ${LINE}`, borderRadius: 12, padding: "11px 13px", color: TEXT, cursor: "pointer", fontSize: 14 },
   pill: { fontSize: 11, fontWeight: 700, padding: "3px 8px", borderRadius: 20 },
+  groupHeader: { display: "grid", gridTemplateColumns: "1fr auto 1fr", alignItems: "center", gap: 6, padding: "14px 14px 14px 8px", borderBottom: `1px solid ${LINE}`, background: PANEL },
+  memberCountBtn: { display: "inline-flex", alignItems: "center", gap: 5, background: "transparent", border: `1px solid ${LINE}`, color: MUTED, borderRadius: 20, padding: "4px 10px", fontSize: 12, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" },
   appHeader: { display: "flex", alignItems: "center", gap: 6, padding: "14px", borderBottom: `1px solid ${LINE}`, background: PANEL },
   iconBtn: { background: "transparent", border: "none", color: TEXT, cursor: "pointer", padding: 6, borderRadius: 8, display: "flex" },
   tabs: { display: "flex", borderBottom: `1px solid ${LINE}`, background: PANEL },
