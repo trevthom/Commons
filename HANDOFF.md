@@ -27,7 +27,7 @@ Any instructions elsewhere describing TanStack Start, Vite, Convex, or shadcn
 | `public/*.min.js`, `lucide.js`, `qrcode.min.js` | Vendored libraries. Do not hand-edit. |
 | `tools/smoke.mjs` | Dependency-free API test (needs a running server). |
 | `tools/render-test.mjs` | Loads the real page in jsdom and drives sign-up, community creation, invites, server-backed search, the Settings sheets and login key, the emoji picker, the growing message box, the message menu, editing, replies, pinning, muting, and the Forum tab. |
-| `tools/expiry-test.mjs` | Starts its own server on a seeded store and checks the 30-day message expiry. |
+| `tools/expiry-test.mjs` | Starts its own server on a seeded store and checks the 30-day expiry of messages and posts, and the cleanup of unclaimed uploads. |
 | `data.json` | Runtime database. **Never commit** (gitignored). |
 | `images/` | Picture files sent in chat (`IMAGE_DIR` env overrides). **Never commit** (gitignored). |
 
@@ -109,7 +109,8 @@ Content — authenticated; **the server sets `author`/`authorName` from the sess
 
 - `POST /api/message/send` `{ key, sessionId, gid, text, anon, replyTo? }` → `{ ok, key, message }`
 - `POST /api/message/delete` `{ key, sessionId, gid, msgKey }` — author or admin
-- `POST /api/message/send` may carry `image` (a data URL, up to 3 MB decoded) plus `imageW`/`imageH`; `text` may then be empty. The server keeps only real JPEG/PNG/WebP/GIF bytes (checked by magic number, never by the claimed type), writes the file to `images/<24-hex id>.<ext>`, and stores `image: { id, ext, w, h }` on the message. The picture is **never** stored in `data.json`, since every poll reads message records.
+- `POST /api/image/upload?w=&h=` — raw picture bytes as the body (up to 8 MB); credentials in the headers `X-Commons-Key`, `X-Commons-Session`, `X-Commons-Group` (never the URL, which proxies log) → `{ ok, imageId, image }`. Members only. The server keeps only real JPEG/PNG/WebP/GIF bytes (checked by magic number, never by the claimed type) and writes `images/<24-hex id>.<ext>`. The upload waits in memory (`pendingImages`) for its uploader to claim it in the same community; unclaimed uploads are deleted after an hour.
+- `POST /api/message/send` may carry `imageId` (from an upload); `text` may then be empty. The message stores `image: { id, ext, w, h }`. An upload can be claimed once, only by its uploader; otherwise the error is `image-expired` (also after a server restart, when the client uploads again and retries once). The picture is **never** stored in `data.json`, since every poll reads message records.
 - `GET  /api/image/<id>.<ext>` → the picture file (`nosniff`, long private cache). The random id is the capability, like a group id. Deleting a message, deleting its group, or expiry deletes the file.
 - `POST /api/message/edit` `{ key, sessionId, gid, msgKey, text }` → `{ ok, key, message }` — **author only** (admins may delete, never rewrite); replaces `text`, stamps `editedAt` and bumps `updatedAt`
 - `POST /api/message/react` `{ key, sessionId, gid, msgKey, emoji }` → `{ ok, key, message }` — any member; sets the caller's one reaction (a different emoji replaces it, the same emoji removes it), only accepts the fixed `REACTIONS` set, and bumps `updatedAt`
@@ -182,9 +183,14 @@ Reads — open; a group id or invite is the capability:
 - The group's second tab is the **Forum** (bulletin-board posts under `post:
   keys`); the first is **General** (chat under `msg:` keys).
 - Anonymity is **per-message only**, via the eye button beside the composer. The
-  per-community default toggle was intentionally removed. Anonymous labels are
-  derived from `author + gid` (`anonLabel`), so they are stable within a
-  community.
+  per-community default toggle was intentionally removed. Anonymous labels
+  (`anonName`) are derived from `author + gid + the Eastern date the message
+  was sent`, so they last one day: stable within a community and a day, new
+  the next day. Search results use the same function.
+- The search bar is hidden until the magnifying glass (`title="Search
+  messages"`, beside the Settings gear) is tapped; `GroupApp` owns
+  `searchOpen`, and closing the bar (its X) clears the query. Tapping the icon
+  on the Forum tab switches to General and opens the bar.
 - General-chat search is **server-backed** (`messageSearch` → `/api/message/search`,
   150 ms debounce). While a query is active the message list is replaced by a
   results list; picking a result clears the query and jumps to the message.
@@ -272,14 +278,29 @@ Reads — open; a group id or invite is the capability:
   button stay put while the box grows upward; the emoji panel opens above it.
   Message text renders with `S.msgText` (`white-space: pre-wrap`), so line
   breaks survive.
-- **30-day expiry**: every chat message (system notices included) is deleted
-  30 days after its `ts`, with its picture file and any pin. `sweepExpired` in
-  `server.js` runs at start-up and hourly. Forum posts are **not** affected.
-  The room shows this at the top of the feed (`data-role="retention-note"`).
+- **30-day expiry**: every chat message (system notices included) and every
+  forum post (with its replies) is deleted 30 days after its `ts`, with its
+  picture file and any pin. `sweepExpired` in `server.js` runs at start-up and
+  hourly; it also deletes unclaimed uploads and any picture file no record
+  refers to once it is an hour old. The rule is stated in README.md, not in
+  the UI.
+- **The message box is contenteditable** (`data-role="composer-input"`,
+  `role="textbox"`), not a `<textarea>`: Android keyboards offer their GIF and
+  sticker buttons only to rich edit fields. It stays plain text: pastes and
+  drops insert `text/plain` only, a picture that arrives by paste, drop,
+  `beforeinput` or as an `<img>` the keyboard inserted becomes the attachment,
+  and the text is read with `innerText` (`readBox`). The placeholder is a CSS
+  `::before` on `data-empty="1"`. `send` reads the box itself, not React
+  state, because a keyboard can commit text and Enter in one go.
 - **Pictures**: the General composer (and the thread composer) has a picture
-  button (`title="Send a picture"`, hidden `data-role="image-input"`).
-  `prepareImage` shrinks the photo to at most 1600px and re-encodes it as JPEG
-  on a canvas before sending; the text becomes an optional caption. The bubble
+  button (`title="Send a picture"`, hidden `data-role="image-input"`). A
+  picked, pasted or keyboard picture is uploaded **at once**
+  (`prepareImage` → `imageUpload`) while the sender types, so send only
+  attaches the `imageId`. `prepareImage` decodes with `createImageBitmap`
+  (falls back to `<img>`), shrinks photos to at most 1600px and re-encodes
+  them as JPEG with `canvas.toBlob` (this also drops EXIF data such as GPS);
+  GIFs are sent untouched so they keep moving. A browser that can't decode
+  HEIC says so (`IMAGE_ERRORS`). The text becomes an optional caption. The bubble
   shows `MsgImage` (`data-role="msg-image"`, sized from the stored `w`/`h` so
   the feed does not jump), and a tap opens `Lightbox` (`data-role="lightbox"`,
   fixed full-screen; a tap, the X or Escape closes it). Previews of a picture
@@ -320,7 +341,7 @@ Reads — open; a group id or invite is the capability:
   opens upward instead of being clipped by the feed's edge and covered by the
   composer.
 - After changing any file in `public/`, **bump `CACHE` in `public/sw.js`**
-  (currently `commons-v14`; go to `commons-v15`, …) so installed clients drop the
+  (currently `commons-v15`; go to `commons-v16`, …) so installed clients drop the
   old shell. The worker is network-first now, so the bump mainly guarantees
   eviction.
 

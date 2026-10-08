@@ -61,13 +61,20 @@ const slist = async (prefix) => {
   return j ? j.keys : [];
 };
 const auth = (s, extra) => ({ key: s.key, sessionId: s.sessionId, ...extra });
-const messageSend = (s, gid, text, anon, replyTo, image) => api.post("/api/message/send", auth(s, {
-  gid,
-  text,
-  anon,
-  replyTo,
-  ...image ? { image: image.dataUrl, imageW: image.w, imageH: image.h } : {}
-}));
+const messageSend = (s, gid, text, anon, replyTo, imageId) => api.post("/api/message/send", auth(s, { gid, text, anon, replyTo, ...imageId ? { imageId } : {} }));
+const imageUpload = async (s, gid, prep) => {
+  try {
+    const r = await fetch(`/api/image/upload?w=${prep.w}&h=${prep.h}`, { method: "POST", body: prep.blob, headers: {
+      "Content-Type": prep.blob.type || "application/octet-stream",
+      "X-Commons-Key": s.key,
+      "X-Commons-Session": s.sessionId,
+      "X-Commons-Group": gid
+    } });
+    return await r.json();
+  } catch {
+    return null;
+  }
+};
 const messageDelete = (s, gid, msgKey) => api.post("/api/message/delete", auth(s, { gid, msgKey }));
 const messageEdit = (s, gid, msgKey, text) => api.post("/api/message/edit", auth(s, { gid, msgKey, text }));
 const messageReact = (s, gid, msgKey, emoji) => api.post("/api/message/react", auth(s, { gid, msgKey, emoji }));
@@ -185,6 +192,8 @@ const onEnter = (fn) => (e) => {
   }
 };
 const ANON_NAMES = ["Maple", "Cedar", "Willow", "Birch", "Aspen", "Sage", "Fern", "Heron", "Otter", "Robin", "Wren", "Lark"];
+const anonDayFmt = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" });
+const anonName = (author, gid, ts) => anonLabel((author || "x") + (gid || "") + anonDayFmt.format(new Date(ts || 0)));
 const anonLabel = (seed) => {
   let h = 0;
   for (const c of String(seed)) h = h * 31 + c.charCodeAt(0) >>> 0;
@@ -425,6 +434,7 @@ function GroupApp({ session, group, setGroup, tab, setTab, onLeave, onLogout }) 
   const [showAdmin, setShowAdmin] = useState(false);
   const [changingName, setChangingName] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const me = group.members[session.key];
   const isOwner = group.ownerKey === session.key;
   const isAdmin = isOwner || (group.admins || []).includes(session.key);
@@ -450,7 +460,20 @@ function GroupApp({ session, group, setGroup, tab, setTab, onLeave, onLogout }) 
     return () => clearInterval(t);
   }, [reloadGroup]);
   if (needsName) return /* @__PURE__ */ React.createElement(UsernamePicker, { session, group, onSet: (g) => setGroup(g), onLeave });
-  return /* @__PURE__ */ React.createElement("div", { style: S.screen }, /* @__PURE__ */ React.createElement("div", { style: S.appHeader }, /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Back to your communities", onClick: onLeave }, /* @__PURE__ */ React.createElement(ChevronLeft, { size: 20 })), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0, textAlign: "center", lineHeight: 1.25 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, group.name), /* @__PURE__ */ React.createElement("div", { "data-role": "member-count", style: { ...S.muted, fontSize: 12 } }, memberCount, " member", memberCount === 1 ? "" : "s"), /* @__PURE__ */ React.createElement("button", { style: { ...S.nameBtn, textAlign: "center", maxWidth: "100%", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, title: "Change your username", onClick: () => setChangingName(true) }, me.username, " \u270E", isOwner ? " \xB7 owner" : isAdmin ? " \xB7 admin" : "")), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Settings", onClick: () => setSettingsOpen(true) }, /* @__PURE__ */ React.createElement(Settings, { size: 19 }))), /* @__PURE__ */ React.createElement("div", { style: S.tabs }, /* @__PURE__ */ React.createElement("button", { style: { ...S.tab, ...tab === "general" ? S.tabActive : {} }, onClick: () => setTab("general") }, /* @__PURE__ */ React.createElement(MessageSquare, { size: 16 }), " General"), /* @__PURE__ */ React.createElement("button", { style: { ...S.tab, ...tab === "forum" ? S.tabActive : {} }, onClick: () => setTab("forum") }, /* @__PURE__ */ React.createElement(MapPin, { size: 16 }), " Forum")), tab === "general" ? /* @__PURE__ */ React.createElement(GeneralChat, { session, group, me, isAdmin, mutes, onToggleMute: toggleMute, onGroupChange: reloadGroup }) : /* @__PURE__ */ React.createElement(Forum, { session, group, me, isAdmin, mutes }), settingsOpen && /* @__PURE__ */ React.createElement(SettingsModal, { session, onClose: () => setSettingsOpen(false), onLogout, actions: [
+  return /* @__PURE__ */ React.createElement("div", { style: S.screen }, /* @__PURE__ */ React.createElement("div", { style: S.appHeader }, /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Back to your communities", onClick: onLeave }, /* @__PURE__ */ React.createElement(ChevronLeft, { size: 20 })), /* @__PURE__ */ React.createElement("div", { style: { width: 32, flexShrink: 0 } }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0, textAlign: "center", lineHeight: 1.25 } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, group.name), /* @__PURE__ */ React.createElement("div", { "data-role": "member-count", style: { ...S.muted, fontSize: 12 } }, memberCount, " member", memberCount === 1 ? "" : "s"), /* @__PURE__ */ React.createElement("button", { style: { ...S.nameBtn, textAlign: "center", maxWidth: "100%", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, title: "Change your username", onClick: () => setChangingName(true) }, me.username, " \u270E", isOwner ? " \xB7 owner" : isAdmin ? " \xB7 admin" : "")), /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      style: { ...S.iconBtn, color: searchOpen && tab === "general" ? ACCENT : TEXT },
+      title: "Search messages",
+      onClick: () => {
+        if (tab !== "general") {
+          setTab("general");
+          setSearchOpen(true);
+        } else setSearchOpen((v) => !v);
+      }
+    },
+    /* @__PURE__ */ React.createElement(Search, { size: 19 })
+  ), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Settings", onClick: () => setSettingsOpen(true) }, /* @__PURE__ */ React.createElement(Settings, { size: 19 }))), /* @__PURE__ */ React.createElement("div", { style: S.tabs }, /* @__PURE__ */ React.createElement("button", { style: { ...S.tab, ...tab === "general" ? S.tabActive : {} }, onClick: () => setTab("general") }, /* @__PURE__ */ React.createElement(MessageSquare, { size: 16 }), " General"), /* @__PURE__ */ React.createElement("button", { style: { ...S.tab, ...tab === "forum" ? S.tabActive : {} }, onClick: () => setTab("forum") }, /* @__PURE__ */ React.createElement(MapPin, { size: 16 }), " Forum")), tab === "general" ? /* @__PURE__ */ React.createElement(GeneralChat, { session, group, me, isAdmin, mutes, onToggleMute: toggleMute, onGroupChange: reloadGroup, searchOpen, onCloseSearch: () => setSearchOpen(false) }) : /* @__PURE__ */ React.createElement(Forum, { session, group, me, isAdmin, mutes }), settingsOpen && /* @__PURE__ */ React.createElement(SettingsModal, { session, onClose: () => setSettingsOpen(false), onLogout, actions: [
     { icon: /* @__PURE__ */ React.createElement(QrCode, { size: 18 }), label: "Invite people", onClick: () => setShowInvite(true) },
     ...isAdmin ? [{ icon: /* @__PURE__ */ React.createElement(Shield, { size: 18 }), label: "Manage members", onClick: () => setShowAdmin(true) }] : []
   ] }), showInvite && /* @__PURE__ */ React.createElement(InviteModal, { group, session, onClose: () => setShowInvite(false), onChange: reloadGroup }), showAdmin && isAdmin && /* @__PURE__ */ React.createElement(AdminModal, { session, group, isOwner, onClose: () => setShowAdmin(false), onChange: reloadGroup, onDeleted: onLeave }), changingName && /* @__PURE__ */ React.createElement(ChangeNameModal, { session, group, me, onClose: () => setChangingName(false), onChanged: (g) => {
@@ -553,31 +576,70 @@ function useItems(prefix, ms = 2500) {
 }
 const excerptOf = (t) => String(t || "").replace(/\s+/g, " ").trim().slice(0, 90);
 const msgExcerpt = (m) => m && m.text ? excerptOf(m.text) : m && m.image ? "\u{1F4F7} Photo" : "";
-const IMAGE_MAX_SIDE = 1600;
+const IMAGE_MAX_SIDE = 1600, IMAGE_MAX_BYTES = 8e6;
 const imageUrl = (img) => `/api/image/${img.id}.${img.ext}`;
-async function prepareImage(file) {
+async function decodeImage(file) {
+  if (window.createImageBitmap) {
+    try {
+      return await createImageBitmap(file, { imageOrientation: "from-image" });
+    } catch {
+    }
+  }
   const url = URL.createObjectURL(file);
   try {
-    const img = await new Promise((res, rej) => {
+    return await new Promise((res, rej) => {
       const i = new window.Image();
       i.onload = () => res(i);
       i.onerror = rej;
       i.src = url;
     });
-    const scale = Math.min(1, IMAGE_MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
-    const w = Math.max(1, Math.round(img.naturalWidth * scale)), h = Math.max(1, Math.round(img.naturalHeight * scale));
-    const c = document.createElement("canvas");
-    c.width = w;
-    c.height = h;
-    const ctx = c.getContext("2d");
-    ctx.fillStyle = "#fff";
-    ctx.fillRect(0, 0, w, h);
-    ctx.drawImage(img, 0, 0, w, h);
-    return { dataUrl: c.toDataURL("image/jpeg", 0.82), w, h };
   } finally {
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 }
+const isHeic = (file) => /heic|heif/i.test(file.type || "") || /\.hei[cf]$/i.test(file.name || "");
+async function prepareImage(file) {
+  let src;
+  try {
+    src = await decodeImage(file);
+  } catch {
+    throw new Error(isHeic(file) ? "heic" : "unreadable");
+  }
+  const sw = src.naturalWidth || src.width, sh = src.naturalHeight || src.height;
+  if (/gif/i.test(file.type || "")) {
+    if (src.close) src.close();
+    if (file.size > IMAGE_MAX_BYTES) throw new Error("image-too-large");
+    return { blob: file, w: sw, h: sh };
+  }
+  const scale = Math.min(1, IMAGE_MAX_SIDE / Math.max(sw, sh));
+  const w = Math.max(1, Math.round(sw * scale)), h = Math.max(1, Math.round(sh * scale));
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(src, 0, 0, w, h);
+  if (src.close) src.close();
+  const blob = await new Promise((res, rej) => c.toBlob((b) => b ? res(b) : rej(new Error("unreadable")), "image/jpeg", 0.8));
+  return { blob, w, h };
+}
+const IMAGE_ERRORS = {
+  heic: "This browser can't open HEIC photos. Share the photo as a JPEG instead.",
+  "image-too-large": "That picture is too large (8 MB at most).",
+  "bad-image": "That file isn't a picture that can be sent.",
+  unreadable: "That picture couldn't be opened."
+};
+const imageError = (code) => IMAGE_ERRORS[code] || "Could not send the picture. Tap send to try again.";
+const imageFrom = (dt) => {
+  if (!dt) return null;
+  for (const f of dt.files || []) if (/^image\//.test(f.type)) return f;
+  for (const it of dt.items || []) if (it.kind === "file" && /^image\//.test(it.type)) {
+    const f = it.getAsFile();
+    if (f) return f;
+  }
+  return null;
+};
 function MsgImage({ img, onOpen, maxW = 260 }) {
   const w = Math.min(maxW, img.w || maxW);
   const h = Math.min(320, Math.round(w * (img.h || 1) / (img.w || 1)));
@@ -634,70 +696,177 @@ const REACTIONS = ["\u{1F44D}", "\u{1F44E}", "\u2764\uFE0F", "\u{1F525}", "\u{1F
 const QUICK_REACTIONS = REACTIONS.slice(0, 5);
 const MORE_REACTIONS = REACTIONS.slice(5);
 const COMPOSER_LINE = 20, COMPOSER_PAD = 9, COMPOSER_ROWS = 6;
-function Composer({ me, onSend, placeholder, editing, allowImage }) {
+const readBox = (el) => {
+  if (!el) return "";
+  const t = typeof el.innerText === "string" ? el.innerText : el.textContent;
+  return (t || "").replace(/\u00a0/g, " ").replace(/\n$/, "");
+};
+function Composer({ me, onSend, placeholder, editing, uploadImage }) {
   const [text, setText] = useState("");
   const [anonOverride, setAnonOverride] = useState(null);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [attach, setAttach] = useState(null);
-  const [attachState, setAttachState] = useState("");
+  const [attachErr, setAttachErr] = useState("");
+  const [sending, setSending] = useState(false);
   const inputRef = useRef(null);
   const fileRef = useRef(null);
+  const attachRef = useRef(null);
   const wasEditing = useRef(false);
   const anon = !!anonOverride;
-  const send = async () => {
-    if (attach && !editing) {
-      if (attachState === "sending" || attachState === "preparing") return;
-      setAttachState("sending");
-      setEmojiOpen(false);
-      const ok = await onSend(text.trim(), anon, attach);
-      if (ok === false) {
-        setAttachState("error");
-        return;
-      }
-      setAttach(null);
-      setAttachState("");
-      setText("");
-      return;
-    }
-    if (!text.trim() && !(editing && editing.image)) return;
-    onSend(text.trim(), anon);
-    setText("");
-    setEmojiOpen(false);
-  };
-  const pickImage = async (e) => {
-    const file = e.target.files && e.target.files[0];
-    e.target.value = "";
-    if (!file) return;
-    setAttachState("preparing");
-    try {
-      setAttach(await prepareImage(file));
-      setAttachState("");
-    } catch {
-      setAttach(null);
-      setAttachState("error");
-    }
-    if (inputRef.current) inputRef.current.focus();
-  };
-  const addEmoji = (e) => {
-    setText((t) => t + e);
-    if (inputRef.current) inputRef.current.focus();
-  };
-  useLayoutEffect(() => {
+  const allowImage = !!uploadImage;
+  const setBox = (t) => {
     const el = inputRef.current;
     if (!el) return;
-    const max = COMPOSER_LINE * COMPOSER_ROWS + COMPOSER_PAD * 2 + 2;
-    el.style.height = "auto";
-    const want = text ? el.scrollHeight + 2 : COMPOSER_LINE + COMPOSER_PAD * 2 + 2;
-    el.style.height = Math.min(want, max) + "px";
-    el.style.overflowY = want > max ? "auto" : "hidden";
-  }, [text]);
+    el.textContent = t;
+    setText(t);
+    if (document.activeElement === el && t) {
+      const r = document.createRange();
+      r.selectNodeContents(el);
+      r.collapse(false);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+    }
+  };
+  const insertText = (t) => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.focus();
+    let done = false;
+    try {
+      done = document.execCommand("insertText", false, t);
+    } catch {
+    }
+    if (!done) el.textContent = readBox(el) + t;
+    sync();
+  };
+  const sync = () => {
+    const el = inputRef.current;
+    if (!el) return;
+    for (const img of el.querySelectorAll("img")) {
+      const src = img.getAttribute("src");
+      img.remove();
+      if (src && allowImage) fetch(src).then((r) => r.blob()).then((b) => startAttach(new File([b], "keyboard." + (b.type.split("/")[1] || "gif"), { type: b.type || "image/gif" }))).catch(() => {
+      });
+    }
+    const t = readBox(el);
+    if (!t.trim() && el.innerHTML && !el.textContent) el.innerHTML = "";
+    setText(t);
+  };
+  const dropAttach = () => {
+    const a = attachRef.current;
+    if (a && a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+    attachRef.current = null;
+    setAttach(null);
+    setAttachErr("");
+  };
+  const upload = (job) => {
+    job.done = null;
+    job.promise = uploadImage(job.file).then((r) => {
+      job.done = r || { ok: false };
+      if (attachRef.current === job && !job.done.ok) setAttachErr(imageError(job.done.error));
+      return job.done;
+    });
+  };
+  const startAttach = (file) => {
+    if (!allowImage || !file) return;
+    dropAttach();
+    let previewUrl = "";
+    try {
+      previewUrl = URL.createObjectURL(file);
+    } catch {
+    }
+    const job = { file, previewUrl };
+    attachRef.current = job;
+    upload(job);
+    setAttach(job);
+    setAttachErr("");
+    if (inputRef.current) inputRef.current.focus();
+  };
+  const send = async () => {
+    const caption = readBox(inputRef.current).trim();
+    if (attach && !editing) {
+      if (sending) return;
+      const job = attach;
+      setSending(true);
+      setEmojiOpen(false);
+      setAttachErr("");
+      if (job.done && !job.done.ok) upload(job);
+      let r = await job.promise;
+      let res = r && r.ok ? await onSend(caption, anon, r.imageId) : r && r.error || false;
+      if (res === "image-expired") {
+        upload(job);
+        r = await job.promise;
+        res = r && r.ok ? await onSend(caption, anon, r.imageId) : r && r.error || false;
+      }
+      setSending(false);
+      if (attachRef.current !== job) return;
+      if (res !== true) {
+        setAttachErr(imageError(res));
+        return;
+      }
+      dropAttach();
+      setBox("");
+      return;
+    }
+    if (!caption && !(editing && editing.image)) return;
+    onSend(caption, anon);
+    setBox("");
+    setEmojiOpen(false);
+  };
+  const pickImage = (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    startAttach(file);
+  };
+  const onPaste = (e) => {
+    const dt = e.clipboardData;
+    if (!dt) return;
+    e.preventDefault();
+    const file = imageFrom(dt);
+    if (file) {
+      if (!editing) startAttach(file);
+      return;
+    }
+    const t = dt.getData("text/plain");
+    if (t) insertText(t);
+  };
+  const onDrop = (e) => {
+    const dt = e.dataTransfer;
+    if (!dt) return;
+    e.preventDefault();
+    const file = imageFrom(dt);
+    if (file) {
+      if (!editing) startAttach(file);
+      return;
+    }
+    const t = dt.getData("text/plain");
+    if (t) insertText(t);
+  };
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    const onBefore = (e) => {
+      const file = imageFrom(e.dataTransfer);
+      if (file) {
+        e.preventDefault();
+        if (!editing) startAttach(file);
+      }
+    };
+    el.addEventListener("beforeinput", onBefore);
+    return () => el.removeEventListener("beforeinput", onBefore);
+  });
+  useEffect(() => () => {
+    const a = attachRef.current;
+    if (a && a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+  }, []);
   const editKey = editing ? editing._key : null;
   useEffect(() => {
     if (editKey) {
-      setText(editing.text || "");
       setEmojiOpen(false);
       if (inputRef.current) inputRef.current.focus();
-    } else if (wasEditing.current) setText("");
+      setBox(editing.text || "");
+    } else if (wasEditing.current) setBox("");
     wasEditing.current = !!editKey;
   }, [editKey]);
   useEffect(() => {
@@ -706,10 +875,7 @@ function Composer({ me, onSend, placeholder, editing, allowImage }) {
     document.addEventListener("click", close);
     return () => document.removeEventListener("click", close);
   }, [emojiOpen]);
-  return /* @__PURE__ */ React.createElement(React.Fragment, null, (attach || attachState === "error" || attachState === "preparing") && !editing && /* @__PURE__ */ React.createElement("div", { "data-role": "attach-bar", style: S.attachBar }, attach && /* @__PURE__ */ React.createElement("img", { src: attach.dataUrl, alt: "Picture to send", style: S.attachThumb }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0, fontSize: 13, color: attachState === "error" ? "#f87171" : MUTED } }, attachState === "preparing" ? "Preparing picture\u2026" : attachState === "sending" ? "Sending picture\u2026" : attachState === "error" ? attach ? "Could not send the picture. Try again." : "Could not read that picture." : "Add a caption, or send the picture as is."), attachState !== "sending" && /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Remove picture", onClick: () => {
-    setAttach(null);
-    setAttachState("");
-  } }, /* @__PURE__ */ React.createElement(X, { size: 16 }))), /* @__PURE__ */ React.createElement("div", { style: S.composer }, emojiOpen && /* @__PURE__ */ React.createElement("div", { "data-role": "emoji-panel", style: S.emojiPanel, onClick: (e) => e.stopPropagation() }, EMOJI.map((e) => /* @__PURE__ */ React.createElement("button", { key: e, style: S.emojiBtn, onClick: () => addEmoji(e) }, e))), /* @__PURE__ */ React.createElement("div", { style: S.composerTools }, /* @__PURE__ */ React.createElement(
+  return /* @__PURE__ */ React.createElement(React.Fragment, null, attach && !editing && /* @__PURE__ */ React.createElement("div", { "data-role": "attach-bar", style: S.attachBar }, /* @__PURE__ */ React.createElement("img", { src: attach.previewUrl, alt: "Picture to send", style: S.attachThumb }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0, fontSize: 13, color: attachErr ? "#f87171" : MUTED } }, attachErr || (sending ? "Sending\u2026" : "")), !sending && /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Remove picture", onClick: dropAttach }, /* @__PURE__ */ React.createElement(X, { size: 16 }))), /* @__PURE__ */ React.createElement("div", { style: S.composer }, emojiOpen && /* @__PURE__ */ React.createElement("div", { "data-role": "emoji-panel", style: S.emojiPanel, onClick: (e) => e.stopPropagation() }, EMOJI.map((e) => /* @__PURE__ */ React.createElement("button", { key: e, style: S.emojiBtn, onMouseDown: (ev) => ev.preventDefault(), onClick: () => insertText(e) }, e))), /* @__PURE__ */ React.createElement("div", { style: S.composerTools }, /* @__PURE__ */ React.createElement(
     "button",
     {
       style: { ...S.composerIcon, color: anon ? ACCENT : "#9fb0bd", ...editing ? { opacity: 0.35, cursor: "default" } : {} },
@@ -718,32 +884,44 @@ function Composer({ me, onSend, placeholder, editing, allowImage }) {
       onClick: () => setAnonOverride(!anon)
     },
     anon ? /* @__PURE__ */ React.createElement(EyeOff, { size: 18 }) : /* @__PURE__ */ React.createElement(Eye, { size: 18 })
-  ), /* @__PURE__ */ React.createElement("button", { style: { ...S.composerIcon, color: emojiOpen ? ACCENT : "#9fb0bd" }, title: "Emoji", onClick: (e) => {
+  ), /* @__PURE__ */ React.createElement("button", { style: { ...S.composerIcon, color: emojiOpen ? ACCENT : "#9fb0bd" }, title: "Emoji", onMouseDown: (ev) => ev.preventDefault(), onClick: (e) => {
     e.stopPropagation();
     setEmojiOpen((v) => !v);
   } }, /* @__PURE__ */ React.createElement(Smile, { size: 18 })), allowImage && !editing && /* @__PURE__ */ React.createElement("button", { style: { ...S.composerIcon, color: attach ? ACCENT : "#9fb0bd" }, title: "Send a picture", onClick: () => fileRef.current && fileRef.current.click() }, /* @__PURE__ */ React.createElement(ImagePlus, { size: 18 })), allowImage && /* @__PURE__ */ React.createElement("input", { ref: fileRef, type: "file", accept: "image/*", "data-role": "image-input", style: { display: "none" }, onChange: pickImage })), /* @__PURE__ */ React.createElement(
-    "textarea",
+    "div",
     {
       ref: inputRef,
-      rows: 1,
+      contentEditable: true,
+      suppressContentEditableWarning: true,
+      role: "textbox",
+      "aria-multiline": "true",
+      "aria-label": placeholder,
       "data-role": "composer-input",
+      "data-placeholder": placeholder,
+      "data-empty": text ? "0" : "1",
       style: S.composerInput,
-      value: text,
-      placeholder,
-      onChange: (e) => setText(e.target.value),
+      onInput: sync,
+      onPaste,
+      onDrop,
       onKeyDown: (e) => {
-        if (e.key === "Enter" && !e.shiftKey && !(e.nativeEvent && e.nativeEvent.isComposing)) {
-          e.preventDefault();
-          send();
+        if (e.key !== "Enter" || e.nativeEvent && e.nativeEvent.isComposing) return;
+        e.preventDefault();
+        if (!e.shiftKey) return send();
+        let done = false;
+        try {
+          done = document.execCommand("insertLineBreak");
+        } catch {
         }
+        if (!done) insertText("\n");
+        sync();
       }
     }
-  ), /* @__PURE__ */ React.createElement("button", { style: S.sendBtn, title: editing ? "Save edit" : "Send", onClick: send }, editing ? /* @__PURE__ */ React.createElement(Check, { size: 18 }) : /* @__PURE__ */ React.createElement(Send, { size: 17 }))));
+  ), /* @__PURE__ */ React.createElement("button", { style: S.sendBtn, title: editing ? "Save edit" : "Send", onMouseDown: (ev) => ev.preventDefault(), onClick: send }, editing ? /* @__PURE__ */ React.createElement(Check, { size: 18 }) : /* @__PURE__ */ React.createElement(Send, { size: 17 }))));
 }
-const senderLabel = (m) => m.system ? null : m.anon ? anonLabel((m.author || "x") + (m.gid || "")) : m.authorName;
+const senderLabel = (m) => m.system ? null : m.anon ? anonName(m.author, m.gid, m.ts) : m.authorName;
 const previewOf = (m, meKey) => m.system ? m.text : `${m.author === meKey ? "You" : senderLabel(m) || "member"}: ${msgExcerpt(m)}`;
 const WINDOW = 150;
-function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroupChange }) {
+function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroupChange, searchOpen, onCloseSearch }) {
   const prefix = msgPrefix(group.id);
   const [items, reload, mutate, ready] = useItems(prefix);
   const [shown, setShown] = useState(WINDOW);
@@ -820,6 +998,9 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
   useEffect(() => {
     setPinIdx(0);
   }, [pins.length]);
+  useEffect(() => {
+    if (!searchOpen) setQuery("");
+  }, [searchOpen]);
   const trimmed = query.trim();
   useEffect(() => {
     if (!trimmed) {
@@ -910,12 +1091,21 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
     const r = await messageReact(session, group.id, m._key, emoji);
     if (r && r.ok && r.message) replaceLocal(m._key, { ...r.message, _key: m._key });
   };
-  const postMessage = async (text, anon, parent, image) => {
-    const r = await messageSend(session, group.id, text, anon, parent ? { key: parent._key } : null, image);
+  const postMessage = async (text, anon, parent, imageId) => {
+    const r = await messageSend(session, group.id, text, anon, parent ? { key: parent._key } : null, imageId);
     if (r && r.ok && r.message) addLocal({ ...r.message, _key: r.key });
     reload();
-    return !!(r && r.ok);
+    return r && r.ok ? true : r && r.error || false;
   };
+  const uploadImage = useCallback(async (file) => {
+    let prep;
+    try {
+      prep = await prepareImage(file);
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+    return await imageUpload(session, group.id, prep) || { ok: false, error: "network" };
+  }, [session.key, session.sessionId, group.id]);
   const saveEdit = async (m, text) => {
     setEditing(null);
     if (text === m.text) return;
@@ -929,9 +1119,9 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
       setReplyTo(null);
       return postMessage(text, anon, parent);
     }
-    return postMessage(text, anon, parent, image).then((ok) => {
-      if (ok) setReplyTo(null);
-      return ok;
+    return postMessage(text, anon, parent, image).then((res) => {
+      if (res === true) setReplyTo(null);
+      return res;
     });
   };
   const startReply = (m) => {
@@ -976,11 +1166,11 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
   const unseenIdx = items.findIndex((m) => !m.system && m.author !== session.key && m.ts > openSeen);
   const shownCount = Math.max(shown, unseenIdx >= 0 ? items.length - unseenIdx + 20 : 0);
   const visible = items.length > shownCount ? items.slice(items.length - shownCount) : items;
-  return /* @__PURE__ */ React.createElement("div", { style: S.chatArea }, /* @__PURE__ */ React.createElement("div", { style: S.searchBar }, /* @__PURE__ */ React.createElement(Search, { size: 16, style: { color: "#7b8a96", flexShrink: 0 } }), /* @__PURE__ */ React.createElement("input", { style: S.searchInput, value: query, placeholder: "Search all messages", onChange: (e) => setQuery(e.target.value) }), query && /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Clear search", onClick: () => setQuery("") }, /* @__PURE__ */ React.createElement(X, { size: 16 }))), !trimmed && pins.length > 0 && /* @__PURE__ */ React.createElement("button", { "data-role": "pin-bar", style: S.pinBar, onClick: cyclePin, title: pins.length > 1 ? "Pinned messages \u2014 tap for the next" : "Pinned message" }, /* @__PURE__ */ React.createElement(Pin, { size: 15, style: { color: ACCENT, flexShrink: 0 } }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0, textAlign: "left" } }, /* @__PURE__ */ React.createElement("div", { style: S.pinBarLabel }, "Pinned message", pins.length > 1 ? ` ${pinIdx + 1}/${pins.length}` : ""), /* @__PURE__ */ React.createElement("div", { style: S.pinBarText }, pinText(pins[pinIdx] || pins[0])))), /* @__PURE__ */ React.createElement("div", { style: S.feedWrap }, trimmed ? /* @__PURE__ */ React.createElement("div", { style: S.messages }, /* @__PURE__ */ React.createElement("div", { style: { ...S.muted, padding: "2px 4px" } }, results === null ? "Searching\u2026" : `${results.length} result${results.length === 1 ? "" : "s"} across the whole history`), results && results.map((r) => /* @__PURE__ */ React.createElement("button", { key: r.key, style: S.result, onClick: () => {
+  return /* @__PURE__ */ React.createElement("div", { style: S.chatArea }, searchOpen && /* @__PURE__ */ React.createElement("div", { "data-role": "search-bar", style: S.searchBar }, /* @__PURE__ */ React.createElement(Search, { size: 16, style: { color: "#7b8a96", flexShrink: 0 } }), /* @__PURE__ */ React.createElement("input", { autoFocus: true, style: S.searchInput, value: query, placeholder: "Search all messages", onChange: (e) => setQuery(e.target.value) }), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Close search", onClick: onCloseSearch }, /* @__PURE__ */ React.createElement(X, { size: 16 }))), !trimmed && pins.length > 0 && /* @__PURE__ */ React.createElement("button", { "data-role": "pin-bar", style: S.pinBar, onClick: cyclePin, title: pins.length > 1 ? "Pinned messages \u2014 tap for the next" : "Pinned message" }, /* @__PURE__ */ React.createElement(Pin, { size: 15, style: { color: ACCENT, flexShrink: 0 } }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0, textAlign: "left" } }, /* @__PURE__ */ React.createElement("div", { style: S.pinBarLabel }, "Pinned message", pins.length > 1 ? ` ${pinIdx + 1}/${pins.length}` : ""), /* @__PURE__ */ React.createElement("div", { style: S.pinBarText }, pinText(pins[pinIdx] || pins[0])))), /* @__PURE__ */ React.createElement("div", { style: S.feedWrap }, trimmed ? /* @__PURE__ */ React.createElement("div", { style: S.messages }, /* @__PURE__ */ React.createElement("div", { style: { ...S.muted, padding: "2px 4px" } }, results === null ? "Searching\u2026" : `${results.length} result${results.length === 1 ? "" : "s"} across the whole history`), results && results.map((r) => /* @__PURE__ */ React.createElement("button", { key: r.key, style: S.result, onClick: () => {
     setResults(null);
     setQuery("");
     setJumpTo(r.id);
-  } }, /* @__PURE__ */ React.createElement("span", { style: { color: SENDER, fontWeight: 600, fontSize: 13 } }, r.anon ? anonLabel(r.author + group.id) : r.authorName || "member"), /* @__PURE__ */ React.createElement("div", { style: S.resultText }, r.text), /* @__PURE__ */ React.createElement("div", { "data-role": "msg-stamp", style: S.stamp }, fmtStamp(r.ts)))), results && results.length === 0 && /* @__PURE__ */ React.createElement("div", { style: S.empty }, /* @__PURE__ */ React.createElement("p", { style: S.muted }, "No messages match \u201C", trimmed, "\u201D."))) : /* @__PURE__ */ React.createElement("div", { ref: feedRef, onScroll: onFeedScroll, "data-role": "feed", "data-unread-anchor": anchor || void 0, style: S.messages }, /* @__PURE__ */ React.createElement("div", { "data-role": "retention-note", style: S.retentionNote }, "Messages and pictures are deleted 30 days after they are sent."), items.length === 0 && /* @__PURE__ */ React.createElement("div", { style: S.empty }, /* @__PURE__ */ React.createElement("p", { style: S.muted }, ready ? "Be the first to say hello \u{1F44B}" : "Loading messages\u2026")), visible.length < items.length && /* @__PURE__ */ React.createElement("button", { "data-role": "show-earlier", style: S.showEarlier, onClick: () => setShown(shownCount + WINDOW) }, "Show earlier messages"), visible.map((m) => {
+  } }, /* @__PURE__ */ React.createElement("span", { style: { color: SENDER, fontWeight: 600, fontSize: 13 } }, r.anon ? anonName(r.author, group.id, r.ts) : r.authorName || "member"), /* @__PURE__ */ React.createElement("div", { style: S.resultText }, r.text), /* @__PURE__ */ React.createElement("div", { "data-role": "msg-stamp", style: S.stamp }, fmtStamp(r.ts)))), results && results.length === 0 && /* @__PURE__ */ React.createElement("div", { style: S.empty }, /* @__PURE__ */ React.createElement("p", { style: S.muted }, "No messages match \u201C", trimmed, "\u201D."))) : /* @__PURE__ */ React.createElement("div", { ref: feedRef, onScroll: onFeedScroll, "data-role": "feed", "data-unread-anchor": anchor || void 0, style: S.messages }, items.length === 0 && /* @__PURE__ */ React.createElement("div", { style: S.empty }, /* @__PURE__ */ React.createElement("p", { style: S.muted }, ready ? "Be the first to say hello \u{1F44B}" : "Loading messages\u2026")), visible.length < items.length && /* @__PURE__ */ React.createElement("button", { "data-role": "show-earlier", style: S.showEarlier, onClick: () => setShown(shownCount + WINDOW) }, "Show earlier messages"), visible.map((m) => {
     if (m.system) return /* @__PURE__ */ React.createElement("div", { key: m.id, id: "msg-" + m.id, style: S.systemMsg, className: "reveal" }, m.text);
     const mine = m.author === session.key;
     const isMuted = mutedSet.has(m.author);
@@ -1011,7 +1201,7 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
         onReact: (emoji) => react(m, emoji)
       }
     ), m.replyTo && /* @__PURE__ */ React.createElement(ReplyPreview, { replyTo: m.replyTo, byKey, mutedSet, revealed, onReveal: reveal }), m.image && /* @__PURE__ */ React.createElement(MsgImage, { img: m.image, onOpen: () => setLightbox(m) }), m.text && /* @__PURE__ */ React.createElement("div", { style: S.msgText }, m.text), /* @__PURE__ */ React.createElement(Reactions, { msg: m, meKey: session.key, onToggle: (emoji) => react(m, emoji) }), /* @__PURE__ */ React.createElement(Stamp, { m })));
-  }), /* @__PURE__ */ React.createElement("div", { ref: endRef })), showDown && /* @__PURE__ */ React.createElement("button", { "data-role": "scroll-down", title: "Jump to the newest messages", style: S.scrollDown, onClick: jumpToBottom }, /* @__PURE__ */ React.createElement(ChevronDown, { size: 20 }))), editing && /* @__PURE__ */ React.createElement("div", { "data-role": "edit-banner", style: S.replyBanner }, /* @__PURE__ */ React.createElement(Pencil, { size: 14, style: { flexShrink: 0, color: ACCENT } }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: S.replyBannerName }, "Editing message"), /* @__PURE__ */ React.createElement("div", { style: S.replyBannerText }, msgExcerpt(editing))), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Cancel edit", onClick: () => setEditing(null) }, /* @__PURE__ */ React.createElement(X, { size: 16 }))), replyTo && /* @__PURE__ */ React.createElement("div", { style: S.replyBanner }, /* @__PURE__ */ React.createElement(CornerUpLeft, { size: 14, style: { flexShrink: 0, color: ACCENT } }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: S.replyBannerName }, "Replying to ", senderLabel(replyTo) || "message"), /* @__PURE__ */ React.createElement("div", { style: S.replyBannerText }, msgExcerpt(replyTo))), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Cancel reply", onClick: () => setReplyTo(null) }, /* @__PURE__ */ React.createElement(X, { size: 16 }))), /* @__PURE__ */ React.createElement(Composer, { me, onSend: send, editing, allowImage: true, placeholder: "Message the community\u2026" }), threadRoot && /* @__PURE__ */ React.createElement(ThreadModal, { root: threadRoot, items, byKey, me, onClose: () => setThreadRoot(null), onReply: (t, a, img) => postMessage(t, a, threadRoot, img), onOpenImage: setLightbox }), lightbox && lightbox.image && /* @__PURE__ */ React.createElement(Lightbox, { m: lightbox, onClose: () => setLightbox(null) }));
+  }), /* @__PURE__ */ React.createElement("div", { ref: endRef })), showDown && /* @__PURE__ */ React.createElement("button", { "data-role": "scroll-down", title: "Jump to the newest messages", style: S.scrollDown, onClick: jumpToBottom }, /* @__PURE__ */ React.createElement(ChevronDown, { size: 20 }))), editing && /* @__PURE__ */ React.createElement("div", { "data-role": "edit-banner", style: S.replyBanner }, /* @__PURE__ */ React.createElement(Pencil, { size: 14, style: { flexShrink: 0, color: ACCENT } }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: S.replyBannerName }, "Editing message"), /* @__PURE__ */ React.createElement("div", { style: S.replyBannerText }, msgExcerpt(editing))), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Cancel edit", onClick: () => setEditing(null) }, /* @__PURE__ */ React.createElement(X, { size: 16 }))), replyTo && /* @__PURE__ */ React.createElement("div", { style: S.replyBanner }, /* @__PURE__ */ React.createElement(CornerUpLeft, { size: 14, style: { flexShrink: 0, color: ACCENT } }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: S.replyBannerName }, "Replying to ", senderLabel(replyTo) || "message"), /* @__PURE__ */ React.createElement("div", { style: S.replyBannerText }, msgExcerpt(replyTo))), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Cancel reply", onClick: () => setReplyTo(null) }, /* @__PURE__ */ React.createElement(X, { size: 16 }))), /* @__PURE__ */ React.createElement(Composer, { me, onSend: send, editing, uploadImage, placeholder: "Message the community\u2026" }), threadRoot && /* @__PURE__ */ React.createElement(ThreadModal, { root: threadRoot, items, byKey, me, onClose: () => setThreadRoot(null), onReply: (t, a, img) => postMessage(t, a, threadRoot, img), uploadImage, onOpenImage: setLightbox }), lightbox && lightbox.image && /* @__PURE__ */ React.createElement(Lightbox, { m: lightbox, onClose: () => setLightbox(null) }));
 }
 function MsgMenu({ mine, isAdmin, hasThread, muted, pinned, menuUp, onClose, onReply, onEdit, onThread, onToggleMute, onTogglePin, onDelete, onReact }) {
   const [expanded, setExpanded] = useState(false);
@@ -1092,7 +1282,7 @@ function ReplyPreview({ replyTo, byKey, mutedSet, revealed, onReveal }) {
     /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, !parent ? /* @__PURE__ */ React.createElement("div", { style: { ...S.replyPreviewName, color: MUTED, fontStyle: "italic" } }, "Deleted") : hiddenMuted ? /* @__PURE__ */ React.createElement("div", { style: { ...S.replyPreviewName, color: MUTED } }, "Muted \u2014 tap to show") : /* @__PURE__ */ React.createElement("div", { style: S.replyPreviewName }, senderLabel(parent)), parent && !hiddenMuted && /* @__PURE__ */ React.createElement("div", { style: S.replyPreviewText }, msgExcerpt(parent)))
   );
 }
-function ThreadModal({ root, items, byKey, me, onClose, onReply, onOpenImage }) {
+function ThreadModal({ root, items, byKey, me, onClose, onReply, uploadImage, onOpenImage }) {
   const chain = [];
   const seen = /* @__PURE__ */ new Set([root._key]);
   let frontier = [root._key];
@@ -1111,7 +1301,7 @@ function ThreadModal({ root, items, byKey, me, onClose, onReply, onOpenImage }) 
   return /* @__PURE__ */ React.createElement(Modal, { onClose, title: "Message thread" }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8, maxHeight: "52vh", overflowY: "auto" } }, all.map((m, i) => /* @__PURE__ */ React.createElement("div", { key: m.id, style: { ...S.reply, ...i === 0 ? S.threadRoot : {} } }, /* @__PURE__ */ React.createElement("div", { style: S.bubbleHead }, /* @__PURE__ */ React.createElement("span", { style: { color: SENDER, fontWeight: 600, fontSize: 12 } }, m.anon && /* @__PURE__ */ React.createElement(EyeOff, { size: 10, style: { verticalAlign: -1, marginRight: 3 } }), senderLabel(m)), i === 0 && /* @__PURE__ */ React.createElement("span", { style: { ...S.pill, background: "#2dd4bf22", color: ACCENT, marginLeft: "auto" } }, "ORIGINAL")), m.replyTo && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: MUTED, marginBottom: 2 } }, "\u21A9 ", (() => {
     const par = byKey && byKey.get(m.replyTo.key);
     return par ? senderLabel(par) : "Deleted";
-  })()), m.image && /* @__PURE__ */ React.createElement(MsgImage, { img: m.image, maxW: 220, onOpen: () => onOpenImage(m) }), m.text && /* @__PURE__ */ React.createElement("div", { style: { ...S.msgText, fontSize: 14 } }, m.text), /* @__PURE__ */ React.createElement(Stamp, { m })))), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement(Composer, { me, onSend: (t, a, img) => onReply(t, a, img), allowImage: true, placeholder: "Reply in this thread\u2026" })));
+  })()), m.image && /* @__PURE__ */ React.createElement(MsgImage, { img: m.image, maxW: 220, onOpen: () => onOpenImage(m) }), m.text && /* @__PURE__ */ React.createElement("div", { style: { ...S.msgText, fontSize: 14 } }, m.text), /* @__PURE__ */ React.createElement(Stamp, { m })))), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement(Composer, { me, onSend: (t, a, img) => onReply(t, a, img), uploadImage, placeholder: "Reply in this thread\u2026" })));
 }
 function Forum({ session, group, me, isAdmin, mutes }) {
   const prefix = postPrefix(group.id);
@@ -1332,7 +1522,31 @@ const S = {
   result: { display: "flex", flexDirection: "column", gap: 3, width: "100%", textAlign: "left", background: PANEL, border: `1px solid ${LINE}`, borderRadius: 12, padding: "10px 12px", color: TEXT, cursor: "pointer", fontFamily: "inherit" },
   resultText: { fontSize: 14, color: "#cdd9e1", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
   bubbleFlash: { boxShadow: `0 0 0 2px ${ACCENT}` },
-  composerInput: { flex: 1, minWidth: 0, display: "block", background: PANEL2, border: `1px solid ${LINE}`, color: TEXT, borderRadius: 20, padding: `${COMPOSER_PAD}px 16px`, outline: "none", fontSize: 15, lineHeight: `${COMPOSER_LINE}px`, fontFamily: "inherit", resize: "none", overflowY: "hidden", margin: 0 },
+  // contenteditable: it grows with its text, then scrolls past six lines.
+  composerInput: {
+    position: "relative",
+    flex: 1,
+    minWidth: 0,
+    display: "block",
+    background: PANEL2,
+    border: `1px solid ${LINE}`,
+    color: TEXT,
+    borderRadius: 20,
+    padding: `${COMPOSER_PAD}px 16px`,
+    outline: "none",
+    fontSize: 15,
+    lineHeight: `${COMPOSER_LINE}px`,
+    fontFamily: "inherit",
+    margin: 0,
+    minHeight: COMPOSER_LINE + COMPOSER_PAD * 2 + 2,
+    maxHeight: COMPOSER_LINE * COMPOSER_ROWS + COMPOSER_PAD * 2 + 2,
+    overflowY: "auto",
+    whiteSpace: "pre-wrap",
+    overflowWrap: "anywhere",
+    cursor: "text",
+    WebkitUserSelect: "text",
+    userSelect: "text"
+  },
   sendBtn: { background: ACCENT, color: "#04201d", border: "none", borderRadius: "50%", width: 40, height: 40, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
   post: { background: PANEL, border: `1px solid ${LINE}`, borderRadius: 16, padding: 14 },
   postTitle: { fontFamily: "'Fraunces', serif", fontSize: 18, fontWeight: 600, margin: "4px 0 6px" },
@@ -1350,8 +1564,7 @@ const S = {
   lightboxClose: { position: "absolute", top: 12, right: 12, background: "rgba(255,255,255,.12)", border: "none", color: TEXT, borderRadius: "50%", width: 40, height: 40, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" },
   lightboxCaption: { color: TEXT, fontSize: 15, maxWidth: 480, textAlign: "center", whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: 60, overflowY: "auto" },
   attachBar: { display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", background: PANEL, borderTop: `1px solid ${LINE}` },
-  attachThumb: { width: 48, height: 48, objectFit: "cover", borderRadius: 8, flexShrink: 0 },
-  retentionNote: { alignSelf: "center", fontSize: 11, color: MUTED, textAlign: "center", padding: "2px 10px 6px" },
+  attachThumb: { width: 48, height: 48, objectFit: "cover", borderRadius: 8, flexShrink: 0, background: PANEL2, border: `1px solid ${LINE}` },
   feedWrap: { position: "relative", flex: 1, display: "flex", flexDirection: "column", minHeight: 0 },
   scrollDown: { position: "absolute", right: 14, bottom: 14, zIndex: 35, width: 38, height: 38, borderRadius: "50%", background: PANEL, border: `1px solid ${LINE}`, color: ACCENT, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 6px 18px rgba(0,0,0,.45)" },
   groupCard: { display: "flex", alignItems: "center", gap: 12, background: PANEL, border: `1px solid ${LINE}`, borderRadius: 14, padding: 12, cursor: "pointer", color: TEXT },
@@ -1385,5 +1598,6 @@ const CSS = `
 .pulse { animation: p 1.2s ease-in-out infinite; color:${ACCENT}; }
 @keyframes p { 0%,100%{opacity:.3;} 50%{opacity:1;} }
 input::placeholder, textarea::placeholder { color:#54636e; }
+[data-role="composer-input"][data-empty="1"]::before { content: attr(data-placeholder); position: absolute; left: 16px; right: 16px; top: ${COMPOSER_PAD}px; color: #54636e; pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 `;
 window.CommunityChat = CommunityChat;

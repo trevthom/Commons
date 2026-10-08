@@ -155,19 +155,31 @@ const newAccount = async () => (await post("/api/account/create", {})).json;
   const afterEdit = await get(`/api/mget?prefix=${encodeURIComponent(`msg:${gid}:general:`)}&since=${edited.json.message.editedAt - 1}`);
   ok("an edited message comes through a delta read", afterEdit.json.items.some(([k, v]) => k === msgKey1 && v.text === "hello 👋🔥 again"));
 
-  // --- pictures: stored as files, checked by their bytes, deleted with the message ---
-  const PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
-  const pic = await post("/api/message/send", { key: memberKey, sessionId: memberSid, gid, text: "", image: PNG, imageW: 1, imageH: 1 });
-  ok("a picture can be sent without a caption", pic.json && pic.json.ok && pic.json.message.image && pic.json.message.image.ext === "png" && pic.json.message.text === "", pic.json);
-  ok("the picture is not stored inside the message record", pic.json && !JSON.stringify(pic.json.message).includes("base64"));
-  const picUrl = pic.json && pic.json.message.image ? `/api/image/${pic.json.message.image.id}.${pic.json.message.image.ext}` : "/api/image/none";
+  // --- pictures: uploaded raw, checked by their bytes, claimed by a message, deleted with it ---
+  const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64");
+  const GIF = Buffer.from("R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==", "base64");
+  const upload = async (who, sid, body, type = "image/png", g = gid) => {
+    const r = await fetch(BASE + "/api/image/upload?w=4&h=3", { method: "POST", body,
+      headers: { "Content-Type": type, "X-Commons-Key": who, "X-Commons-Session": sid, "X-Commons-Group": g } });
+    return r.json();
+  };
+  const up = await upload(memberKey, memberSid, PNG);
+  ok("a member can upload a picture", up.ok && /^[0-9a-f]{24}$/.test(up.imageId) && up.image.ext === "png" && up.image.w === 4, up);
+  ok("an upload needs the session", (await upload(memberKey, "nope", PNG)).error === "auth");
+  ok("a non-member cannot upload", (await upload(stranger.key, stranger.sessionId, PNG)).error === "not-member");
+  ok("bytes that are not a real picture are rejected",
+    (await upload(memberKey, memberSid, Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>"), "image/svg+xml")).error === "bad-image");
+  const gifUp = await upload(memberKey, memberSid, GIF, "image/gif");
+  ok("a GIF is kept as a GIF", gifUp.ok && gifUp.image.ext === "gif");
+  const stolen = await post("/api/message/send", { key: ownerKey, sessionId: ownerSid2, gid, text: "", imageId: up.imageId });
+  ok("nobody else can claim your upload", stolen.json && stolen.json.error === "image-expired");
+  const pic = await post("/api/message/send", { key: memberKey, sessionId: memberSid, gid, text: "", imageId: up.imageId });
+  ok("a picture can be sent without a caption", pic.json && pic.json.ok && pic.json.message.image && pic.json.message.image.id === up.imageId && pic.json.message.text === "", pic.json);
+  const again = await post("/api/message/send", { key: memberKey, sessionId: memberSid, gid, text: "", imageId: up.imageId });
+  ok("an upload can be claimed only once", again.json && again.json.error === "image-expired");
+  const picUrl = `/api/image/${up.imageId}.png`;
   const picGet = await fetch(BASE + picUrl);
   ok("the picture is served with its real type", picGet.status === 200 && picGet.headers.get("content-type") === "image/png" && picGet.headers.get("x-content-type-options") === "nosniff");
-  const fakePic = await post("/api/message/send", { key: memberKey, sessionId: memberSid, gid, text: "x",
-    image: "data:image/png;base64," + Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>").toString("base64") });
-  ok("bytes that are not a real picture are rejected", fakePic.json && fakePic.json.error === "bad-image");
-  const strangerPic = await post("/api/message/send", { key: stranger.key, sessionId: stranger.sessionId, gid, image: PNG });
-  ok("a non-member cannot send a picture", strangerPic.json && strangerPic.json.error === "not-member");
   const emptyCaption = await post("/api/message/edit", { key: memberKey, sessionId: memberSid, gid, msgKey: pic.json.key, text: "" });
   ok("a picture's caption may be emptied by an edit", emptyCaption.json && emptyCaption.json.ok);
   const picDel = await post("/api/message/delete", { key: memberKey, sessionId: memberSid, gid, msgKey: pic.json.key });
