@@ -261,10 +261,15 @@ Reads — open; a group id or invite is the capability:
   accepts only the fixed `REACTIONS` list — keep it in sync with the copy in
   `src/app.src.jsx`.
 - The community list card shows only the name, the newest-message preview and
-  the unread badge — role is not shown there. Inside a room the header's centre
-  reads the community name, the member count (`data-role="member-count"`) and
-  `<username> ✎ · owner|admin`: the pencil sits immediately right of the
-  username and the role to its right.
+  the unread badge — role is not shown there. Inside a room the header
+  (`data-role="group-header"`) is a three-column grid (`1fr auto 1fr`), so the
+  middle column sits at the exact centre. Left: the back arrow, the community
+  name (`data-role="group-name"`, truncated with "…" when long) and below it
+  `<username> ✎ · owner|admin`. Middle: the member count
+  (`data-role="member-count"`), a button that opens `MembersModal` — every
+  member, owner first, then admins, then members, each alphabetical, with
+  OWNER/ADMIN badges (`data-role="role-badge"`); the sheet scrolls when long.
+  Right: search and Settings.
 - Each header has one **Settings gear** (`title="Settings"`) at the top right,
   which opens `SettingsModal`. On "Your communities" it holds the login key and
   Log out. Inside a community it also holds Invite people and (admins only)
