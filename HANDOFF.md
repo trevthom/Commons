@@ -64,7 +64,7 @@ with `freebuff-preview start`.
 | --- | --- |
 | `account:<16-char key>` | `{ key, createdAt, sessionId }` — **the login credential itself** |
 | `group:<id>` | `{ id, name, createdAt, ownerKey, admins[], members{key:{username,joinedAt,lastNameChange}}, usernames{lowercased→key}, banned[], invite, inviteOnce, pins[] }` |
-| `msg:<gid>:general:<ts>:<uid>` | `{ id, ts, text, anon, author, authorName, gid, replyTo?, image?, reactions?, editedAt?, updatedAt? }` (or `{ system:true, text }`) |
+| `msg:<gid>:general:<ts>:<uid>` | `{ id, ts, text, anon, author, authorName, gid, replyTo?, image?, poll?, reactions?, editedAt?, updatedAt? }` (or `{ system:true, text }`) |
 | `post:<gid>:<ts>:<uid>` | `{ id, ts, title, text, anon, author, authorName, gid, replies[] }` |
 
 Accounts are anonymous login keys; there is no email/password and no recovery.
@@ -113,6 +113,8 @@ Content — authenticated; **the server sets `author`/`authorName` from the sess
 - `POST /api/message/send` may carry `imageId` (from an upload); `text` may then be empty. The message stores `image: { id, ext, w, h }`. An upload can be claimed once, only by its uploader; otherwise the error is `image-expired` (also after a server restart, when the client uploads again and retries once). The picture is **never** stored in `data.json`, since every poll reads message records.
 - `GET  /api/image/<id>.<ext>` → the picture file (`nosniff`, long private cache). The random id is the capability, like a group id. Deleting a message, deleting its group, or expiry deletes the file.
 - `POST /api/message/edit` `{ key, sessionId, gid, msgKey, text }` → `{ ok, key, message }` — **author only** (admins may delete, never rewrite); replaces `text`, stamps `editedAt` and bumps `updatedAt`
+- `POST /api/poll/create` `{ key, sessionId, gid, question, options[], multi, replyTo? }` → `{ ok, key, message }` — any member. The poll is a chat message: `text` is the question (so search, replies, pins and previews work unchanged) and `poll: { options: [{ id, text }], multi, votes: { optionId: [accountKey, …] } }`. Question ≤ 200 chars; 2–10 options of ≤ 80 chars, no duplicates (case-insensitive); errors `empty`, `too-few-options`, `too-many-options`, `duplicate-options`. It expires with its message (30 days).
+- `POST /api/poll/vote` `{ key, sessionId, gid, msgKey, optionId }` → `{ ok, key, message }` — any member. A single-answer poll keeps one vote per member (a new option moves it, the same option removes it); a `multi` poll toggles each option. Bumps `updatedAt`, so votes ride the delta polls. `POST /api/message/edit` refuses a poll (`not-editable`).
 - `POST /api/message/react` `{ key, sessionId, gid, msgKey, emoji }` → `{ ok, key, message }` — any member; sets the caller's one reaction (a different emoji replaces it, the same emoji removes it), only accepts the fixed `REACTIONS` set, and bumps `updatedAt`
 - `POST /api/message/search` `{ key, sessionId, gid, q }` → `{ ok, results[], total }` — scans the whole history server-side
 - `POST /api/post/create` `{ key, sessionId, gid, title, text, anon }` → `{ ok, key, post }`
@@ -310,6 +312,14 @@ Reads — open; a group id or invite is the capability:
   the feed does not jump), and a tap opens `Lightbox` (`data-role="lightbox"`,
   fixed full-screen; a tap, the X or Escape closes it). Previews of a picture
   without a caption read "📷 Photo" (`msgExcerpt`).
+- **Polls**: the General composer has a poll button (`title="Create a poll"`)
+  that opens `PollModal` (`data-role="poll-question"`, `poll-option-input`,
+  `poll-add-option`, `poll-submit`). In the feed a poll message renders
+  `PollCard` (`data-role="poll"`) instead of its text: one `poll-option`
+  button per option (`data-mine="1"` on your own choice) with a bar sized to
+  its share of the *voters* (so a multiple-answer poll's shares can add up to
+  more than 100%), the count, and a voter total. Votes update the local cache
+  from the server's reply, like reactions. A poll's menu has no Edit.
 - **Editing**: the author's message menu has "Edit message". It opens an
   "Editing message" banner (`data-role="edit-banner"`, which replaces any reply
   banner) and loads the text into the box; the send button becomes a check and
@@ -346,7 +356,7 @@ Reads — open; a group id or invite is the capability:
   opens upward instead of being clipped by the feed's edge and covered by the
   composer.
 - After changing any file in `public/`, **bump `CACHE` in `public/sw.js`**
-  (currently `commons-v15`; go to `commons-v16`, …) so installed clients drop the
+  (currently `commons-v17`; go to `commons-v18`, …) so installed clients drop the
   old shell. The worker is network-first now, so the bump mainly guarantees
   eviction.
 

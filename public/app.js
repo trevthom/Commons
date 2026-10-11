@@ -32,7 +32,8 @@ const {
   ChevronDown,
   Settings,
   Pencil,
-  ImagePlus
+  ImagePlus,
+  BarChart3
 } = lucide;
 const api = {
   async post(path, body) {
@@ -77,6 +78,8 @@ const imageUpload = async (s, gid, prep) => {
 };
 const messageDelete = (s, gid, msgKey) => api.post("/api/message/delete", auth(s, { gid, msgKey }));
 const messageEdit = (s, gid, msgKey, text) => api.post("/api/message/edit", auth(s, { gid, msgKey, text }));
+const pollCreate = (s, gid, question, options, multi, replyTo) => api.post("/api/poll/create", auth(s, { gid, question, options, multi, replyTo }));
+const pollVote = (s, gid, msgKey, optionId) => api.post("/api/poll/vote", auth(s, { gid, msgKey, optionId }));
 const messageReact = (s, gid, msgKey, emoji) => api.post("/api/message/react", auth(s, { gid, msgKey, emoji }));
 const messageSearch = (s, gid, q) => api.post("/api/message/search", auth(s, { gid, q }));
 const postCreate = (s, gid, title, text, anon) => api.post("/api/post/create", auth(s, { gid, title, text, anon }));
@@ -582,7 +585,7 @@ function useItems(prefix, ms = 2500) {
   return [items, reload, mutate, ready];
 }
 const excerptOf = (t) => String(t || "").replace(/\s+/g, " ").trim().slice(0, 90);
-const msgExcerpt = (m) => m && m.text ? excerptOf(m.text) : m && m.image ? "\u{1F4F7} Photo" : "";
+const msgExcerpt = (m) => m && m.poll ? "\u{1F4CA} " + excerptOf(m.text) : m && m.text ? excerptOf(m.text) : m && m.image ? "\u{1F4F7} Photo" : "";
 const IMAGE_MAX_SIDE = 1600, IMAGE_MAX_BYTES = 8e6;
 const imageUrl = (img) => `/api/image/${img.id}.${img.ext}`;
 async function decodeImage(file) {
@@ -708,7 +711,7 @@ const readBox = (el) => {
   const t = typeof el.innerText === "string" ? el.innerText : el.textContent;
   return (t || "").replace(/\u00a0/g, " ").replace(/\n$/, "");
 };
-function Composer({ me, onSend, placeholder, editing, uploadImage }) {
+function Composer({ me, onSend, placeholder, editing, uploadImage, onPoll }) {
   const [text, setText] = useState("");
   const [anonOverride, setAnonOverride] = useState(null);
   const [emojiOpen, setEmojiOpen] = useState(false);
@@ -894,7 +897,7 @@ function Composer({ me, onSend, placeholder, editing, uploadImage }) {
   ), /* @__PURE__ */ React.createElement("button", { style: { ...S.composerIcon, color: emojiOpen ? ACCENT : "#9fb0bd" }, title: "Emoji", onMouseDown: (ev) => ev.preventDefault(), onClick: (e) => {
     e.stopPropagation();
     setEmojiOpen((v) => !v);
-  } }, /* @__PURE__ */ React.createElement(Smile, { size: 18 })), allowImage && !editing && /* @__PURE__ */ React.createElement("button", { style: { ...S.composerIcon, color: attach ? ACCENT : "#9fb0bd" }, title: "Send a picture", onClick: () => fileRef.current && fileRef.current.click() }, /* @__PURE__ */ React.createElement(ImagePlus, { size: 18 })), allowImage && /* @__PURE__ */ React.createElement("input", { ref: fileRef, type: "file", accept: "image/*", "data-role": "image-input", style: { display: "none" }, onChange: pickImage })), /* @__PURE__ */ React.createElement(
+  } }, /* @__PURE__ */ React.createElement(Smile, { size: 18 })), allowImage && !editing && /* @__PURE__ */ React.createElement("button", { style: { ...S.composerIcon, color: attach ? ACCENT : "#9fb0bd" }, title: "Send a picture", onClick: () => fileRef.current && fileRef.current.click() }, /* @__PURE__ */ React.createElement(ImagePlus, { size: 18 })), allowImage && /* @__PURE__ */ React.createElement("input", { ref: fileRef, type: "file", accept: "image/*", "data-role": "image-input", style: { display: "none" }, onChange: pickImage }), onPoll && !editing && /* @__PURE__ */ React.createElement("button", { style: { ...S.composerIcon, color: "#9fb0bd" }, title: "Create a poll", onMouseDown: (ev) => ev.preventDefault(), onClick: onPoll }, /* @__PURE__ */ React.createElement(BarChart3, { size: 18 }))), /* @__PURE__ */ React.createElement(
     "div",
     {
       ref: inputRef,
@@ -937,6 +940,7 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
   const [replyTo, setReplyTo] = useState(null);
   const [editing, setEditing] = useState(null);
   const [lightbox, setLightbox] = useState(null);
+  const [pollOpen, setPollOpen] = useState(false);
   const [menuFor, setMenuFor] = useState(null);
   const [threadRoot, setThreadRoot] = useState(null);
   const [revealed, setRevealed] = useState(() => /* @__PURE__ */ new Set());
@@ -1104,6 +1108,21 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
     reload();
     return r && r.ok ? true : r && r.error || false;
   };
+  const vote = async (m, optionId) => {
+    const r = await pollVote(session, group.id, m._key, optionId);
+    if (r && r.ok && r.message) replaceLocal(m._key, { ...r.message, _key: m._key });
+  };
+  const createPoll = async (question, options, multi) => {
+    const parent = replyTo;
+    const r = await pollCreate(session, group.id, question, options, multi, parent ? { key: parent._key } : null);
+    if (r && r.ok && r.message) {
+      addLocal({ ...r.message, _key: r.key });
+      setReplyTo(null);
+      reload();
+      return true;
+    }
+    return r && r.error || false;
+  };
   const uploadImage = useCallback(async (file) => {
     let prep;
     try {
@@ -1198,6 +1217,7 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
         muted: isMuted,
         pinned,
         menuUp,
+        canEdit: !m.poll,
         onClose: () => setMenuFor(null),
         onReply: () => startReply(m),
         onEdit: () => startEdit(m),
@@ -1207,10 +1227,10 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
         onDelete: () => del(m),
         onReact: (emoji) => react(m, emoji)
       }
-    ), m.replyTo && /* @__PURE__ */ React.createElement(ReplyPreview, { replyTo: m.replyTo, byKey, mutedSet, revealed, onReveal: reveal }), m.image && /* @__PURE__ */ React.createElement(MsgImage, { img: m.image, onOpen: () => setLightbox(m) }), m.text && /* @__PURE__ */ React.createElement("div", { style: S.msgText }, m.text), /* @__PURE__ */ React.createElement(Reactions, { msg: m, meKey: session.key, onToggle: (emoji) => react(m, emoji) }), /* @__PURE__ */ React.createElement(Stamp, { m })));
-  }), /* @__PURE__ */ React.createElement("div", { ref: endRef })), showDown && /* @__PURE__ */ React.createElement("button", { "data-role": "scroll-down", title: "Jump to the newest messages", style: S.scrollDown, onClick: jumpToBottom }, /* @__PURE__ */ React.createElement(ChevronDown, { size: 20 }))), editing && /* @__PURE__ */ React.createElement("div", { "data-role": "edit-banner", style: S.replyBanner }, /* @__PURE__ */ React.createElement(Pencil, { size: 14, style: { flexShrink: 0, color: ACCENT } }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: S.replyBannerName }, "Editing message"), /* @__PURE__ */ React.createElement("div", { style: S.replyBannerText }, msgExcerpt(editing))), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Cancel edit", onClick: () => setEditing(null) }, /* @__PURE__ */ React.createElement(X, { size: 16 }))), replyTo && /* @__PURE__ */ React.createElement("div", { style: S.replyBanner }, /* @__PURE__ */ React.createElement(CornerUpLeft, { size: 14, style: { flexShrink: 0, color: ACCENT } }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: S.replyBannerName }, "Replying to ", senderLabel(replyTo) || "message"), /* @__PURE__ */ React.createElement("div", { style: S.replyBannerText }, msgExcerpt(replyTo))), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Cancel reply", onClick: () => setReplyTo(null) }, /* @__PURE__ */ React.createElement(X, { size: 16 }))), /* @__PURE__ */ React.createElement(Composer, { me, onSend: send, editing, uploadImage, placeholder: "Message the community\u2026" }), threadRoot && /* @__PURE__ */ React.createElement(ThreadModal, { root: threadRoot, items, byKey, me, onClose: () => setThreadRoot(null), onReply: (t, a, img) => postMessage(t, a, threadRoot, img), uploadImage, onOpenImage: setLightbox }), lightbox && lightbox.image && /* @__PURE__ */ React.createElement(Lightbox, { m: lightbox, onClose: () => setLightbox(null) }));
+    ), m.replyTo && /* @__PURE__ */ React.createElement(ReplyPreview, { replyTo: m.replyTo, byKey, mutedSet, revealed, onReveal: reveal }), m.image && /* @__PURE__ */ React.createElement(MsgImage, { img: m.image, onOpen: () => setLightbox(m) }), m.poll ? /* @__PURE__ */ React.createElement(PollCard, { m, meKey: session.key, onVote: (oid) => vote(m, oid) }) : m.text && /* @__PURE__ */ React.createElement("div", { style: S.msgText }, m.text), /* @__PURE__ */ React.createElement(Reactions, { msg: m, meKey: session.key, onToggle: (emoji) => react(m, emoji) }), /* @__PURE__ */ React.createElement(Stamp, { m })));
+  }), /* @__PURE__ */ React.createElement("div", { ref: endRef })), showDown && /* @__PURE__ */ React.createElement("button", { "data-role": "scroll-down", title: "Jump to the newest messages", style: S.scrollDown, onClick: jumpToBottom }, /* @__PURE__ */ React.createElement(ChevronDown, { size: 20 }))), editing && /* @__PURE__ */ React.createElement("div", { "data-role": "edit-banner", style: S.replyBanner }, /* @__PURE__ */ React.createElement(Pencil, { size: 14, style: { flexShrink: 0, color: ACCENT } }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: S.replyBannerName }, "Editing message"), /* @__PURE__ */ React.createElement("div", { style: S.replyBannerText }, msgExcerpt(editing))), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Cancel edit", onClick: () => setEditing(null) }, /* @__PURE__ */ React.createElement(X, { size: 16 }))), replyTo && /* @__PURE__ */ React.createElement("div", { style: S.replyBanner }, /* @__PURE__ */ React.createElement(CornerUpLeft, { size: 14, style: { flexShrink: 0, color: ACCENT } }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0 } }, /* @__PURE__ */ React.createElement("div", { style: S.replyBannerName }, "Replying to ", senderLabel(replyTo) || "message"), /* @__PURE__ */ React.createElement("div", { style: S.replyBannerText }, msgExcerpt(replyTo))), /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Cancel reply", onClick: () => setReplyTo(null) }, /* @__PURE__ */ React.createElement(X, { size: 16 }))), /* @__PURE__ */ React.createElement(Composer, { me, onSend: send, editing, uploadImage, onPoll: () => setPollOpen(true), placeholder: "Message\u2026" }), pollOpen && /* @__PURE__ */ React.createElement(PollModal, { onClose: () => setPollOpen(false), onCreate: createPoll }), threadRoot && /* @__PURE__ */ React.createElement(ThreadModal, { root: threadRoot, items, byKey, me, onClose: () => setThreadRoot(null), onReply: (t, a, img) => postMessage(t, a, threadRoot, img), uploadImage, onOpenImage: setLightbox }), lightbox && lightbox.image && /* @__PURE__ */ React.createElement(Lightbox, { m: lightbox, onClose: () => setLightbox(null) }));
 }
-function MsgMenu({ mine, isAdmin, hasThread, muted, pinned, menuUp, onClose, onReply, onEdit, onThread, onToggleMute, onTogglePin, onDelete, onReact }) {
+function MsgMenu({ mine, canEdit, isAdmin, hasThread, muted, pinned, menuUp, onClose, onReply, onEdit, onThread, onToggleMute, onTogglePin, onDelete, onReact }) {
   const [expanded, setExpanded] = useState(false);
   const item = (icon, label, onClick, danger) => /* @__PURE__ */ React.createElement(
     "button",
@@ -1252,7 +1272,56 @@ function MsgMenu({ mine, isAdmin, hasThread, muted, pinned, menuUp, onClose, onR
       }
     },
     /* @__PURE__ */ React.createElement(ChevronDown, { size: 17, style: { transform: expanded ? "rotate(180deg)" : "none" } })
-  )), expanded && /* @__PURE__ */ React.createElement("div", { "data-role": "react-more-panel", style: S.reactMorePanel }, MORE_REACTIONS.map(emojiBtn)), /* @__PURE__ */ React.createElement("div", { style: S.menu }, item(/* @__PURE__ */ React.createElement(CornerUpLeft, { size: 15 }), "Reply", onReply), mine && item(/* @__PURE__ */ React.createElement(Pencil, { size: 15 }), "Edit message", onEdit), hasThread && item(/* @__PURE__ */ React.createElement(MessageSquare, { size: 15 }), "View message thread", onThread), isAdmin && item(pinned ? /* @__PURE__ */ React.createElement(PinOff, { size: 15 }) : /* @__PURE__ */ React.createElement(Pin, { size: 15 }), pinned ? "Unpin message" : "Pin message", onTogglePin), !mine && item(muted ? /* @__PURE__ */ React.createElement(BellOff, { size: 15 }) : /* @__PURE__ */ React.createElement(Bell, { size: 15 }), muted ? "Unmute user" : "Mute user", onToggleMute), (mine || isAdmin) && item(/* @__PURE__ */ React.createElement(Trash2, { size: 15 }), "Delete message", onDelete, true)));
+  )), expanded && /* @__PURE__ */ React.createElement("div", { "data-role": "react-more-panel", style: S.reactMorePanel }, MORE_REACTIONS.map(emojiBtn)), /* @__PURE__ */ React.createElement("div", { style: S.menu }, item(/* @__PURE__ */ React.createElement(CornerUpLeft, { size: 15 }), "Reply", onReply), mine && canEdit && item(/* @__PURE__ */ React.createElement(Pencil, { size: 15 }), "Edit message", onEdit), hasThread && item(/* @__PURE__ */ React.createElement(MessageSquare, { size: 15 }), "View message thread", onThread), isAdmin && item(pinned ? /* @__PURE__ */ React.createElement(PinOff, { size: 15 }) : /* @__PURE__ */ React.createElement(Pin, { size: 15 }), pinned ? "Unpin message" : "Pin message", onTogglePin), !mine && item(muted ? /* @__PURE__ */ React.createElement(BellOff, { size: 15 }) : /* @__PURE__ */ React.createElement(Bell, { size: 15 }), muted ? "Unmute user" : "Mute user", onToggleMute), (mine || isAdmin) && item(/* @__PURE__ */ React.createElement(Trash2, { size: 15 }), "Delete message", onDelete, true)));
+}
+function PollCard({ m, meKey, onVote }) {
+  const poll = m.poll;
+  const votes = poll.votes && typeof poll.votes === "object" ? poll.votes : {};
+  const who = (id) => Array.isArray(votes[id]) ? votes[id] : [];
+  const voters = new Set(Object.values(votes).flatMap((v) => Array.isArray(v) ? v : [])).size;
+  return /* @__PURE__ */ React.createElement("div", { "data-role": "poll", style: S.poll }, /* @__PURE__ */ React.createElement("div", { style: S.pollQuestion }, /* @__PURE__ */ React.createElement(BarChart3, { size: 14, style: { flexShrink: 0, marginTop: 3, color: ACCENT } }), /* @__PURE__ */ React.createElement("span", { style: S.msgText }, m.text)), /* @__PURE__ */ React.createElement("div", { style: S.pollHint }, poll.multi ? "Choose any number" : "Choose one"), poll.options.map((o) => {
+    const n = who(o.id).length, mine = who(o.id).includes(meKey);
+    const pct = voters ? Math.round(n / voters * 100) : 0;
+    return /* @__PURE__ */ React.createElement(
+      "button",
+      {
+        key: o.id,
+        "data-role": "poll-option",
+        "data-mine": mine ? "1" : "0",
+        title: mine ? "Take back your vote" : "Vote for this",
+        style: { ...S.pollOption, ...mine ? S.pollOptionMine : {} },
+        onClick: (e) => {
+          e.stopPropagation();
+          onVote(o.id);
+        }
+      },
+      /* @__PURE__ */ React.createElement("span", { style: { ...S.pollBar, width: pct + "%" } }),
+      /* @__PURE__ */ React.createElement("span", { style: S.pollMark }, mine ? /* @__PURE__ */ React.createElement(Check, { size: 14, color: ACCENT }) : null),
+      /* @__PURE__ */ React.createElement("span", { style: { ...S.pollText, ...S.msgText } }, o.text),
+      /* @__PURE__ */ React.createElement("span", { "data-role": "poll-count", style: S.pollCount }, n, voters ? ` \xB7 ${pct}%` : "")
+    );
+  }), /* @__PURE__ */ React.createElement("div", { "data-role": "poll-total", style: S.pollTotal }, voters, " ", voters === 1 ? "voter" : "voters"));
+}
+function PollModal({ onClose, onCreate }) {
+  const [question, setQuestion] = useState("");
+  const [options, setOptions] = useState(["", ""]);
+  const [multi, setMulti] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const filled = options.map((o) => o.trim()).filter(Boolean);
+  const dup = new Set(filled.map((o) => o.toLowerCase())).size !== filled.length;
+  const ready = question.trim() && filled.length >= 2 && !dup;
+  const setOpt = (i, v) => setOptions((cur) => cur.map((o, j) => j === i ? v : o));
+  const submit = async () => {
+    if (!ready || busy) return;
+    setBusy(true);
+    setErr("");
+    const r = await onCreate(question.trim(), filled, multi);
+    setBusy(false);
+    if (r === true) onClose();
+    else setErr("Could not create the poll. Try again.");
+  };
+  return /* @__PURE__ */ React.createElement(Modal, { onClose, title: "Create a poll" }, /* @__PURE__ */ React.createElement("label", { style: S.label }, "Question"), /* @__PURE__ */ React.createElement("input", { "data-role": "poll-question", style: S.input, value: question, maxLength: 200, placeholder: "Where should we meet?", onChange: (e) => setQuestion(e.target.value) }), /* @__PURE__ */ React.createElement("label", { style: { ...S.label, marginTop: 12 } }, "Options"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } }, options.map((o, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { display: "flex", gap: 6, alignItems: "center" } }, /* @__PURE__ */ React.createElement("input", { "data-role": "poll-option-input", style: S.input, value: o, maxLength: 80, placeholder: `Option ${i + 1}`, onChange: (e) => setOpt(i, e.target.value) }), options.length > 2 && /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Remove option", onClick: () => setOptions((cur) => cur.filter((_, j) => j !== i)) }, /* @__PURE__ */ React.createElement(X, { size: 16 }))))), options.length < 10 && /* @__PURE__ */ React.createElement("button", { "data-role": "poll-add-option", style: { ...S.ghost, textAlign: "left", color: ACCENT, padding: "8px 2px" }, onClick: () => setOptions((cur) => [...cur, ""]) }, "+ Add an option"), dup && /* @__PURE__ */ React.createElement("div", { style: S.error }, "Each option must be different."), /* @__PURE__ */ React.createElement("button", { style: { ...S.toggleRow, marginTop: 8 }, onClick: () => setMulti((v) => !v) }, /* @__PURE__ */ React.createElement("span", { style: { flex: 1, textAlign: "left" } }, "Allow more than one answer"), /* @__PURE__ */ React.createElement("span", { style: { ...S.pill, background: multi ? "#2dd4bf22" : "#ffffff14", color: multi ? ACCENT : "#9fb0bd" } }, multi ? "ON" : "OFF")), err && /* @__PURE__ */ React.createElement("div", { style: S.error }, err), /* @__PURE__ */ React.createElement("button", { "data-role": "poll-submit", style: { ...S.primary, marginTop: 14, opacity: ready ? 1 : 0.5 }, disabled: !ready || busy, onClick: submit }, busy ? "Posting\u2026" : "Post poll"));
 }
 function Reactions({ msg, meKey, onToggle }) {
   const shown = msg.reactions && typeof msg.reactions === "object" ? Object.entries(msg.reactions).filter(([, who]) => Array.isArray(who) && who.length) : [];
@@ -1308,7 +1377,7 @@ function ThreadModal({ root, items, byKey, me, onClose, onReply, uploadImage, on
   return /* @__PURE__ */ React.createElement(Modal, { onClose, title: "Message thread" }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8, maxHeight: "52vh", overflowY: "auto" } }, all.map((m, i) => /* @__PURE__ */ React.createElement("div", { key: m.id, style: { ...S.reply, ...i === 0 ? S.threadRoot : {} } }, /* @__PURE__ */ React.createElement("div", { style: S.bubbleHead }, /* @__PURE__ */ React.createElement("span", { style: { color: SENDER, fontWeight: 600, fontSize: 12 } }, m.anon && /* @__PURE__ */ React.createElement(EyeOff, { size: 10, style: { verticalAlign: -1, marginRight: 3 } }), senderLabel(m)), i === 0 && /* @__PURE__ */ React.createElement("span", { style: { ...S.pill, background: "#2dd4bf22", color: ACCENT, marginLeft: "auto" } }, "ORIGINAL")), m.replyTo && /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: MUTED, marginBottom: 2 } }, "\u21A9 ", (() => {
     const par = byKey && byKey.get(m.replyTo.key);
     return par ? senderLabel(par) : "Deleted";
-  })()), m.image && /* @__PURE__ */ React.createElement(MsgImage, { img: m.image, maxW: 220, onOpen: () => onOpenImage(m) }), m.text && /* @__PURE__ */ React.createElement("div", { style: { ...S.msgText, fontSize: 14 } }, m.text), /* @__PURE__ */ React.createElement(Stamp, { m })))), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement(Composer, { me, onSend: (t, a, img) => onReply(t, a, img), uploadImage, placeholder: "Reply in this thread\u2026" })));
+  })()), m.image && /* @__PURE__ */ React.createElement(MsgImage, { img: m.image, maxW: 220, onOpen: () => onOpenImage(m) }), m.text && /* @__PURE__ */ React.createElement("div", { style: { ...S.msgText, fontSize: 14 } }, m.poll ? "\u{1F4CA} " : "", m.text), /* @__PURE__ */ React.createElement(Stamp, { m })))), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 10 } }, /* @__PURE__ */ React.createElement(Composer, { me, onSend: (t, a, img) => onReply(t, a, img), uploadImage, placeholder: "Reply in this thread\u2026" })));
 }
 function Forum({ session, group, me, isAdmin, mutes }) {
   const prefix = postPrefix(group.id);
@@ -1565,6 +1634,16 @@ const S = {
   showEarlier: { alignSelf: "center", background: "transparent", border: `1px solid ${LINE}`, color: MUTED, borderRadius: 20, padding: "5px 14px", fontSize: 12, cursor: "pointer", fontFamily: "inherit" },
   bottomBar: { display: "flex", gap: 10, padding: 14, borderTop: `1px solid ${LINE}`, background: PANEL },
   badge: { background: ACCENT, color: "#04201d", fontWeight: 700, fontSize: 12, minWidth: 22, height: 22, padding: "0 7px", borderRadius: 11, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  poll: { display: "flex", flexDirection: "column", gap: 6, minWidth: 220 },
+  pollQuestion: { display: "flex", gap: 6, alignItems: "flex-start", fontWeight: 700, fontSize: 15 },
+  pollHint: { fontSize: 11, color: MUTED, marginTop: -2 },
+  pollOption: { position: "relative", display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left", overflow: "hidden", background: "rgba(255,255,255,.06)", border: `1px solid ${LINE}`, borderRadius: 10, padding: "8px 10px", color: TEXT, cursor: "pointer", fontFamily: "inherit", fontSize: 14 },
+  pollOptionMine: { borderColor: ACCENT },
+  pollBar: { position: "absolute", left: 0, top: 0, bottom: 0, background: "rgba(45,212,191,.18)", transition: "width .25s ease", pointerEvents: "none" },
+  pollMark: { position: "relative", width: 14, height: 14, flexShrink: 0, display: "flex" },
+  pollText: { position: "relative", flex: 1, minWidth: 0 },
+  pollCount: { position: "relative", fontSize: 12, color: MUTED, fontWeight: 700, flexShrink: 0 },
+  pollTotal: { fontSize: 11, color: MUTED },
   msgImageBtn: { display: "block", padding: 0, margin: "2px 0 4px", border: "none", background: "transparent", cursor: "zoom-in", borderRadius: 10, overflow: "hidden", maxWidth: "100%" },
   msgImage: { display: "block", maxWidth: "100%", objectFit: "cover", background: "rgba(255,255,255,.05)", borderRadius: 10 },
   // Fixed, not absolute: it covers the whole window above every sheet.

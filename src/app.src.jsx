@@ -2,7 +2,7 @@ const { useState, useEffect, useLayoutEffect, useRef, useCallback } = React;
 const {
   Users, MapPin, Shield, Send, Eye, EyeOff, Link2, QrCode, Search,
   X, Trash2, UserMinus, Crown, LogIn, Plus, Copy, Check, MessageSquare, ChevronLeft, Ban, Key, LogOut,
-  MoreVertical, CornerUpLeft, Bell, BellOff, Smile, Pin, PinOff, ChevronDown, Settings, Pencil, ImagePlus
+  MoreVertical, CornerUpLeft, Bell, BellOff, Smile, Pin, PinOff, ChevronDown, Settings, Pencil, ImagePlus, BarChart3
 } = lucide;
 
 // ---------- API ----------
@@ -31,6 +31,8 @@ const imageUpload = async (s, gid, prep) => {
 };
 const messageDelete = (s, gid, msgKey) => api.post("/api/message/delete", auth(s, { gid, msgKey }));
 const messageEdit = (s, gid, msgKey, text) => api.post("/api/message/edit", auth(s, { gid, msgKey, text }));
+const pollCreate = (s, gid, question, options, multi, replyTo) => api.post("/api/poll/create", auth(s, { gid, question, options, multi, replyTo }));
+const pollVote = (s, gid, msgKey, optionId) => api.post("/api/poll/vote", auth(s, { gid, msgKey, optionId }));
 const messageReact = (s, gid, msgKey, emoji) => api.post("/api/message/react", auth(s, { gid, msgKey, emoji }));
 const messageSearch = (s, gid, q) => api.post("/api/message/search", auth(s, { gid, q }));
 const postCreate = (s, gid, title, text, anon) => api.post("/api/post/create", auth(s, { gid, title, text, anon }));
@@ -580,7 +582,7 @@ function useItems(prefix, ms = 2500) {
 const excerptOf = (t) => String(t || "").replace(/\s+/g, " ").trim().slice(0, 90);
 // The one-line stand-in for a message: its text, or "📷 Photo" for a picture
 // sent without a caption.
-const msgExcerpt = (m) => (m && m.text ? excerptOf(m.text) : m && m.image ? "📷 Photo" : "");
+const msgExcerpt = (m) => (m && m.poll ? "📊 " + excerptOf(m.text) : m && m.text ? excerptOf(m.text) : m && m.image ? "📷 Photo" : "");
 
 // ---------- pictures ----------
 // A picture is uploaded the moment it is picked or pasted, while the sender
@@ -706,7 +708,7 @@ const readBox = (el) => {
   const t = typeof el.innerText === "string" ? el.innerText : el.textContent;
   return (t || "").replace(/\u00a0/g, " ").replace(/\n$/, "");
 };
-function Composer({ me, onSend, placeholder, editing, uploadImage }) {
+function Composer({ me, onSend, placeholder, editing, uploadImage, onPoll }) {
   const [text, setText] = useState("");
   const [anonOverride, setAnonOverride] = useState(null);
   const [emojiOpen, setEmojiOpen] = useState(false);
@@ -852,6 +854,7 @@ function Composer({ me, onSend, placeholder, editing, uploadImage }) {
       <button style={{ ...S.composerIcon, color: emojiOpen ? ACCENT : "#9fb0bd" }} title="Emoji" onMouseDown={(ev) => ev.preventDefault()} onClick={(e) => { e.stopPropagation(); setEmojiOpen((v) => !v); }}><Smile size={18} /></button>
       {allowImage && !editing && <button style={{ ...S.composerIcon, color: attach ? ACCENT : "#9fb0bd" }} title="Send a picture" onClick={() => fileRef.current && fileRef.current.click()}><ImagePlus size={18} /></button>}
       {allowImage && <input ref={fileRef} type="file" accept="image/*" data-role="image-input" style={{ display: "none" }} onChange={pickImage} />}
+      {onPoll && !editing && <button style={{ ...S.composerIcon, color: "#9fb0bd" }} title="Create a poll" onMouseDown={(ev) => ev.preventDefault()} onClick={onPoll}><BarChart3 size={18} /></button>}
     </div>
     <div ref={inputRef} contentEditable suppressContentEditableWarning role="textbox" aria-multiline="true" aria-label={placeholder}
       data-role="composer-input" data-placeholder={placeholder} data-empty={text ? "0" : "1"} style={S.composerInput}
@@ -885,6 +888,7 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
   const [replyTo, setReplyTo] = useState(null);
   const [editing, setEditing] = useState(null);
   const [lightbox, setLightbox] = useState(null); // the message whose picture is open
+  const [pollOpen, setPollOpen] = useState(false);
   const [menuFor, setMenuFor] = useState(null);
   const [threadRoot, setThreadRoot] = useState(null);
   const [revealed, setRevealed] = useState(() => new Set());
@@ -1019,6 +1023,16 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
     reload();
     return r && r.ok ? true : (r && r.error) || false;
   };
+  const vote = async (m, optionId) => {
+    const r = await pollVote(session, group.id, m._key, optionId);
+    if (r && r.ok && r.message) replaceLocal(m._key, { ...r.message, _key: m._key });
+  };
+  const createPoll = async (question, options, multi) => {
+    const parent = replyTo;
+    const r = await pollCreate(session, group.id, question, options, multi, parent ? { key: parent._key } : null);
+    if (r && r.ok && r.message) { addLocal({ ...r.message, _key: r.key }); setReplyTo(null); reload(); return true; }
+    return (r && r.error) || false;
+  };
   const uploadImage = useCallback(async (file) => {
     let prep;
     try { prep = await prepareImage(file); } catch (e) { return { ok: false, error: e.message }; }
@@ -1132,11 +1146,13 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
               <button style={S.miniDel} title="Message options" onClick={(e) => toggleMenu(m, e)}><MoreVertical size={14} /></button>
             </div>
             {menuFor === m.id && <MsgMenu mine={mine} isAdmin={isAdmin} hasThread={hasThread} muted={isMuted} pinned={pinned} menuUp={menuUp}
-              onClose={() => setMenuFor(null)} onReply={() => startReply(m)} onEdit={() => startEdit(m)} onThread={() => openThread(m)}
+              canEdit={!m.poll} onClose={() => setMenuFor(null)} onReply={() => startReply(m)} onEdit={() => startEdit(m)} onThread={() => openThread(m)}
               onToggleMute={() => onToggleMute(m.author)} onTogglePin={() => togglePin(m)} onDelete={() => del(m)} onReact={(emoji) => react(m, emoji)} />}
             {m.replyTo && <ReplyPreview replyTo={m.replyTo} byKey={byKey} mutedSet={mutedSet} revealed={revealed} onReveal={reveal} />}
             {m.image && <MsgImage img={m.image} onOpen={() => setLightbox(m)} />}
-            {m.text && <div style={S.msgText}>{m.text}</div>}
+            {m.poll
+              ? <PollCard m={m} meKey={session.key} onVote={(oid) => vote(m, oid)} />
+              : m.text && <div style={S.msgText}>{m.text}</div>}
             <Reactions msg={m} meKey={session.key} onToggle={(emoji) => react(m, emoji)} />
             <Stamp m={m} />
           </div>
@@ -1162,7 +1178,8 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
       </div>
       <button style={S.iconBtn} title="Cancel reply" onClick={() => setReplyTo(null)}><X size={16} /></button>
     </div>}
-    <Composer me={me} onSend={send} editing={editing} uploadImage={uploadImage} placeholder="Message the community…" />
+    <Composer me={me} onSend={send} editing={editing} uploadImage={uploadImage} onPoll={() => setPollOpen(true)} placeholder="Message…" />
+    {pollOpen && <PollModal onClose={() => setPollOpen(false)} onCreate={createPoll} />}
     {threadRoot && <ThreadModal root={threadRoot} items={items} byKey={byKey} me={me} onClose={() => setThreadRoot(null)} onReply={(t, a, img) => postMessage(t, a, threadRoot, img)} uploadImage={uploadImage} onOpenImage={setLightbox} />}
     {lightbox && lightbox.image && <Lightbox m={lightbox} onClose={() => setLightbox(null)} />}
   </div>;
@@ -1172,7 +1189,7 @@ function GeneralChat({ session, group, me, isAdmin, mutes, onToggleMute, onGroup
 // reaction bar above the items, with a ▼ in the sixth slot that expands the
 // rest of the palette. Each member has one reaction per message: picking
 // another replaces it, and picking the same one again removes it.
-function MsgMenu({ mine, isAdmin, hasThread, muted, pinned, menuUp, onClose, onReply, onEdit, onThread, onToggleMute, onTogglePin, onDelete, onReact }) {
+function MsgMenu({ mine, canEdit, isAdmin, hasThread, muted, pinned, menuUp, onClose, onReply, onEdit, onThread, onToggleMute, onTogglePin, onDelete, onReact }) {
   const [expanded, setExpanded] = useState(false);
   const item = (icon, label, onClick, danger) => (
     <button key={label} style={{ ...S.menuItem, ...(danger ? S.menuItemDanger : {}) }}
@@ -1193,13 +1210,77 @@ function MsgMenu({ mine, isAdmin, hasThread, muted, pinned, menuUp, onClose, onR
     {expanded && <div data-role="react-more-panel" style={S.reactMorePanel}>{MORE_REACTIONS.map(emojiBtn)}</div>}
     <div style={S.menu}>
       {item(<CornerUpLeft size={15} />, "Reply", onReply)}
-      {mine && item(<Pencil size={15} />, "Edit message", onEdit)}
+      {mine && canEdit && item(<Pencil size={15} />, "Edit message", onEdit)}
       {hasThread && item(<MessageSquare size={15} />, "View message thread", onThread)}
       {isAdmin && item(pinned ? <PinOff size={15} /> : <Pin size={15} />, pinned ? "Unpin message" : "Pin message", onTogglePin)}
       {!mine && item(muted ? <BellOff size={15} /> : <Bell size={15} />, muted ? "Unmute user" : "Mute user", onToggleMute)}
       {(mine || isAdmin) && item(<Trash2 size={15} />, "Delete message", onDelete, true)}
     </div>
   </div>;
+}
+
+// A poll inside a message: the question, then one button per option with a bar
+// showing its share of the voters. Tapping an option votes; tapping your own
+// choice again takes the vote back (single-answer polls swap to the new one).
+function PollCard({ m, meKey, onVote }) {
+  const poll = m.poll;
+  const votes = poll.votes && typeof poll.votes === "object" ? poll.votes : {};
+  const who = (id) => (Array.isArray(votes[id]) ? votes[id] : []);
+  const voters = new Set(Object.values(votes).flatMap((v) => (Array.isArray(v) ? v : []))).size;
+  return <div data-role="poll" style={S.poll}>
+    <div style={S.pollQuestion}><BarChart3 size={14} style={{ flexShrink: 0, marginTop: 3, color: ACCENT }} /><span style={S.msgText}>{m.text}</span></div>
+    <div style={S.pollHint}>{poll.multi ? "Choose any number" : "Choose one"}</div>
+    {poll.options.map((o) => {
+      const n = who(o.id).length, mine = who(o.id).includes(meKey);
+      const pct = voters ? Math.round((n / voters) * 100) : 0;
+      return <button key={o.id} data-role="poll-option" data-mine={mine ? "1" : "0"} title={mine ? "Take back your vote" : "Vote for this"} style={{ ...S.pollOption, ...(mine ? S.pollOptionMine : {}) }}
+        onClick={(e) => { e.stopPropagation(); onVote(o.id); }}>
+        <span style={{ ...S.pollBar, width: pct + "%" }} />
+        <span style={S.pollMark}>{mine ? <Check size={14} color={ACCENT} /> : null}</span>
+        <span style={{ ...S.pollText, ...S.msgText }}>{o.text}</span>
+        <span data-role="poll-count" style={S.pollCount}>{n}{voters ? ` · ${pct}%` : ""}</span>
+      </button>;
+    })}
+    <div data-role="poll-total" style={S.pollTotal}>{voters} {voters === 1 ? "voter" : "voters"}</div>
+  </div>;
+}
+// The sheet for writing a poll: a question and 2–10 options.
+function PollModal({ onClose, onCreate }) {
+  const [question, setQuestion] = useState("");
+  const [options, setOptions] = useState(["", ""]);
+  const [multi, setMulti] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const filled = options.map((o) => o.trim()).filter(Boolean);
+  const dup = new Set(filled.map((o) => o.toLowerCase())).size !== filled.length;
+  const ready = question.trim() && filled.length >= 2 && !dup;
+  const setOpt = (i, v) => setOptions((cur) => cur.map((o, j) => (j === i ? v : o)));
+  const submit = async () => {
+    if (!ready || busy) return;
+    setBusy(true); setErr("");
+    const r = await onCreate(question.trim(), filled, multi);
+    setBusy(false);
+    if (r === true) onClose(); else setErr("Could not create the poll. Try again.");
+  };
+  return <Modal onClose={onClose} title="Create a poll">
+    <label style={S.label}>Question</label>
+    <input data-role="poll-question" style={S.input} value={question} maxLength={200} placeholder="Where should we meet?" onChange={(e) => setQuestion(e.target.value)} />
+    <label style={{ ...S.label, marginTop: 12 }}>Options</label>
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {options.map((o, i) => <div key={i} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+        <input data-role="poll-option-input" style={S.input} value={o} maxLength={80} placeholder={`Option ${i + 1}`} onChange={(e) => setOpt(i, e.target.value)} />
+        {options.length > 2 && <button style={S.iconBtn} title="Remove option" onClick={() => setOptions((cur) => cur.filter((_, j) => j !== i))}><X size={16} /></button>}
+      </div>)}
+    </div>
+    {options.length < 10 && <button data-role="poll-add-option" style={{ ...S.ghost, textAlign: "left", color: ACCENT, padding: "8px 2px" }} onClick={() => setOptions((cur) => [...cur, ""])}>+ Add an option</button>}
+    {dup && <div style={S.error}>Each option must be different.</div>}
+    <button style={{ ...S.toggleRow, marginTop: 8 }} onClick={() => setMulti((v) => !v)}>
+      <span style={{ flex: 1, textAlign: "left" }}>Allow more than one answer</span>
+      <span style={{ ...S.pill, background: multi ? "#2dd4bf22" : "#ffffff14", color: multi ? ACCENT : "#9fb0bd" }}>{multi ? "ON" : "OFF"}</span>
+    </button>
+    {err && <div style={S.error}>{err}</div>}
+    <button data-role="poll-submit" style={{ ...S.primary, marginTop: 14, opacity: ready ? 1 : .5 }} disabled={!ready || busy} onClick={submit}>{busy ? "Posting…" : "Post poll"}</button>
+  </Modal>;
 }
 
 // Reaction chips under a message's text; tapping one sets or removes the
@@ -1259,7 +1340,7 @@ function ThreadModal({ root, items, byKey, me, onClose, onReply, uploadImage, on
         </div>
         {m.replyTo && <div style={{ fontSize: 11, color: MUTED, marginBottom: 2 }}>↩ {(() => { const par = byKey && byKey.get(m.replyTo.key); return par ? senderLabel(par) : "Deleted"; })()}</div>}
         {m.image && <MsgImage img={m.image} maxW={220} onOpen={() => onOpenImage(m)} />}
-        {m.text && <div style={{ ...S.msgText, fontSize: 14 }}>{m.text}</div>}
+        {m.text && <div style={{ ...S.msgText, fontSize: 14 }}>{m.poll ? "📊 " : ""}{m.text}</div>}
         <Stamp m={m} />
       </div>)}
     </div>
@@ -1581,6 +1662,16 @@ const S = {
   showEarlier: { alignSelf: "center", background: "transparent", border: `1px solid ${LINE}`, color: MUTED, borderRadius: 20, padding: "5px 14px", fontSize: 12, cursor: "pointer", fontFamily: "inherit" },
   bottomBar: { display: "flex", gap: 10, padding: 14, borderTop: `1px solid ${LINE}`, background: PANEL },
   badge: { background: ACCENT, color: "#04201d", fontWeight: 700, fontSize: 12, minWidth: 22, height: 22, padding: "0 7px", borderRadius: 11, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  poll: { display: "flex", flexDirection: "column", gap: 6, minWidth: 220 },
+  pollQuestion: { display: "flex", gap: 6, alignItems: "flex-start", fontWeight: 700, fontSize: 15 },
+  pollHint: { fontSize: 11, color: MUTED, marginTop: -2 },
+  pollOption: { position: "relative", display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left", overflow: "hidden", background: "rgba(255,255,255,.06)", border: `1px solid ${LINE}`, borderRadius: 10, padding: "8px 10px", color: TEXT, cursor: "pointer", fontFamily: "inherit", fontSize: 14 },
+  pollOptionMine: { borderColor: ACCENT },
+  pollBar: { position: "absolute", left: 0, top: 0, bottom: 0, background: "rgba(45,212,191,.18)", transition: "width .25s ease", pointerEvents: "none" },
+  pollMark: { position: "relative", width: 14, height: 14, flexShrink: 0, display: "flex" },
+  pollText: { position: "relative", flex: 1, minWidth: 0 },
+  pollCount: { position: "relative", fontSize: 12, color: MUTED, fontWeight: 700, flexShrink: 0 },
+  pollTotal: { fontSize: 11, color: MUTED },
   msgImageBtn: { display: "block", padding: 0, margin: "2px 0 4px", border: "none", background: "transparent", cursor: "zoom-in", borderRadius: 10, overflow: "hidden", maxWidth: "100%" },
   msgImage: { display: "block", maxWidth: "100%", objectFit: "cover", background: "rgba(255,255,255,.05)", borderRadius: 10 },
   // Fixed, not absolute: it covers the whole window above every sheet.
