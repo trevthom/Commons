@@ -174,7 +174,7 @@ check("the invite modal closed", !document.querySelector(".sheet"));
 }
 
 // --- search filters messages ---
-const composer = inputByPlaceholder("Message the community…");
+const composer = inputByPlaceholder("Message…");
 setInput(composer, "hello world");
 composer.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 await sleep(600);
@@ -204,7 +204,7 @@ const fireBtn = [...document.querySelectorAll("button")].find((b) => b.textConte
 check("the palette renders emoji", !!fireBtn);
 fireBtn.click();
 await sleep(150);
-const composerEmoji = inputByPlaceholder("Message the community…");
+const composerEmoji = inputByPlaceholder("Message…");
 check("clicking an emoji appends it to the composer", (valueOf(composerEmoji) || "").includes("🔥"), valueOf(composerEmoji));
 setInput(composerEmoji, "emoji test 🔥");
 composerEmoji.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
@@ -213,7 +213,7 @@ check("an emoji message was sent", /emoji test 🔥/.test(screen()));
 
 // --- the message box grows with its text: Shift+Enter is a new line ---
 // It is contenteditable so phone keyboards offer their GIF buttons.
-const box = inputByPlaceholder("Message the community…");
+const box = inputByPlaceholder("Message…");
 check("the message box is a rich edit field (for keyboard GIFs)", !!box && isEditable(box) && box.getAttribute("role") === "textbox");
 setInput(box, "line one");
 box.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true }));
@@ -231,7 +231,7 @@ optsFor("emoji test 🔥").click();
 await sleep(150);
 check("your own message offers Edit message", click("Edit message"));
 await sleep(200);
-const editBox = inputByPlaceholder("Message the community…");
+const editBox = inputByPlaceholder("Message…");
 check("the edit banner opens with the text loaded", !!document.querySelector('[data-role="edit-banner"]') && valueOf(editBox) === "emoji test 🔥", valueOf(editBox));
 setInput(editBox, "emoji test 🔥 changed");
 editBox.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
@@ -247,7 +247,7 @@ check("the message box has a picture button", titled("Send a picture") && !!docu
 check("the 30-day note is gone from the chat", !document.querySelector('[data-role="retention-note"]') && !/deleted 30 days after/.test(screen()));
 {
   // A picture pasted (or put in by a keyboard) is attached, never inserted as markup.
-  const pbox = inputByPlaceholder("Message the community…");
+  const pbox = inputByPlaceholder("Message…");
   const gif = new dom.window.File([new Uint8Array([71, 73, 70, 56, 57, 97])], "kbd.gif", { type: "image/gif" });
   const pasteImg = new dom.window.Event("paste", { bubbles: true, cancelable: true });
   pasteImg.clipboardData = { files: [gif], items: [], getData: () => "" };
@@ -286,6 +286,49 @@ check("tapping a picture opens it full screen", !!lb && !!lb.querySelector("img"
 lb && lb.click();
 await sleep(200);
 check("tapping the full-screen picture closes it", !document.querySelector('[data-role="lightbox"]'));
+
+// --- polls: a poll button, a sheet, options to vote on ---
+check("the message box has a poll button", titled("Create a poll"));
+document.querySelector('[title="Create a poll"]').click();
+await sleep(300);
+const submitPoll = () => document.querySelector('[data-role="poll-submit"]');
+check("the poll sheet opens with Post disabled", !!modal() && submitPoll().disabled);
+setInput(document.querySelector('[data-role="poll-question"]'), "Pizza or tacos?");
+const optInputs = () => [...document.querySelectorAll('[data-role="poll-option-input"]')];
+check("the poll sheet starts with two options", optInputs().length === 2);
+setInput(optInputs()[0], "Pizza");
+setInput(optInputs()[1], "pizza");
+await sleep(150);
+check("duplicate options are refused", submitPoll().disabled && /must be different/.test(modal().textContent));
+setInput(optInputs()[1], "Tacos");
+document.querySelector('[data-role="poll-add-option"]').click();
+await sleep(150);
+check("an option can be added", optInputs().length === 3);
+setInput(optInputs()[2], "Neither");
+await sleep(150);
+check("a valid poll can be posted", !submitPoll().disabled);
+submitPoll().click();
+await sleep(1500);
+check("the poll sheet closed and the poll shows in the chat", !modal() && !!document.querySelector('[data-role="poll"]') && /Pizza or tacos\?/.test(screen()));
+const pollOptions = () => [...document.querySelectorAll('[data-role="poll-option"]')];
+check("the poll lists its three options with no votes", pollOptions().length === 3 && /0 voters/.test(document.querySelector('[data-role="poll-total"]').textContent));
+pollOptions()[1].click();
+await sleep(500);
+check("voting marks your choice and counts it", pollOptions()[1].getAttribute("data-mine") === "1" && /1 · 100%/.test(pollOptions()[1].textContent) && /1 voter$/.test(document.querySelector('[data-role="poll-total"]').textContent));
+pollOptions()[0].click();
+await sleep(500);
+check("voting for another option moves your vote", pollOptions()[0].getAttribute("data-mine") === "1" && pollOptions()[1].getAttribute("data-mine") === "0");
+pollOptions()[0].click();
+await sleep(500);
+check("tapping your choice again takes the vote back", pollOptions().every((o) => o.getAttribute("data-mine") === "0") && /0 voters/.test(document.querySelector('[data-role="poll-total"]').textContent));
+{
+  const pollOpt = [...document.querySelectorAll('[title="Message options"]')].find((b) => b.parentElement.parentElement.textContent.includes("Pizza or tacos?"));
+  pollOpt.click();
+  await sleep(150);
+  check("a poll's menu has no Edit", !/Edit message/.test(screen()) && /Reply/.test(screen()));
+  document.body.click();
+  await sleep(100);
+}
 
 // --- per-message menu ---
 if (inputByPlaceholder("Search all messages")) setInput(inputByPlaceholder("Search all messages"), "");
@@ -365,8 +408,8 @@ check("closing the menu releases the lifted row",
   [...document.querySelectorAll('[title="Message options"]')]
     .every((b) => b.parentElement.parentElement.parentElement.style.zIndex !== "40"));
 check("the reply banner names the parent author", /Replying to tester/.test(screen()));
-setInput(inputByPlaceholder("Message the community…"), "replying to hello");
-inputByPlaceholder("Message the community…").dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+setInput(inputByPlaceholder("Message…"), "replying to hello");
+inputByPlaceholder("Message…").dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 await sleep(1500);
 check("the reply was sent", /replying to hello/.test(screen()));
 const preview = previewFor("replying to hello");
@@ -557,8 +600,8 @@ check("another member's message offers no Edit", !/Edit message/.test(screen()))
 // reply to the other member first, so their message is part of a chain
 check("clicked Reply to the other member", click("Reply"));
 await sleep(150);
-setInput(inputByPlaceholder("Message the community…"), "reply to bob");
-inputByPlaceholder("Message the community…").dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+setInput(inputByPlaceholder("Message…"), "reply to bob");
+inputByPlaceholder("Message…").dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 await sleep(1500);
 check("the reply to the other member landed", /reply to bob/.test(screen()));
 check("its preview names the other member", !!previewFor("reply to bob") && /bob/.test(previewFor("reply to bob").textContent));

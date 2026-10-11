@@ -483,6 +483,73 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
+  // ===== POLLS =====
+  // A poll is a chat message whose `text` is the question (so search, replies
+  // and previews work unchanged) plus `poll: { options: [{ id, text }], multi,
+  // votes: { optionId: [accountKey, …] } }`. It expires with its message.
+  if (p === "/api/poll/create" && req.method === "POST") {
+    const body = await readBody(req);
+    const key = normKey(body.key); const sessionId = body.sessionId;
+    const gid = String(body.gid || "");
+    const question = String(body.question || "").trim().slice(0, 200);
+    const raw = Array.isArray(body.options) ? body.options : [];
+    const texts = raw.map((o) => String(o || "").trim().slice(0, 80)).filter(Boolean);
+    return atomic(() => {
+      if (!sessionOk(key, sessionId)) return sendJSON(res, 200, { ok: false, error: "auth" });
+      const g = store[groupKey(gid)];
+      if (!g || !g.members[key]) return sendJSON(res, 200, { ok: false, error: "not-member" });
+      if (!question) return sendJSON(res, 200, { ok: false, error: "empty" });
+      if (texts.length < 2) return sendJSON(res, 200, { ok: false, error: "too-few-options" });
+      if (texts.length > 10) return sendJSON(res, 200, { ok: false, error: "too-many-options" });
+      const lower = texts.map((t) => t.toLowerCase());
+      if (new Set(lower).size !== lower.length) return sendJSON(res, 200, { ok: false, error: "duplicate-options" });
+      const id = newId(), ts = now();
+      const msg = { id, ts, text: question, anon: false, author: key, authorName: memberName(g, key), gid,
+        poll: { options: texts.map((t, i) => ({ id: String(i + 1), text: t })), multi: !!body.multi, votes: {} } };
+      if (body.replyTo && typeof body.replyTo === "object") {
+        const pk = String(body.replyTo.key || "");
+        const par = pk.startsWith(`msg:${gid}:general:`) ? store[pk] : null;
+        if (par && !par.system) msg.replyTo = { key: pk, id: par.id, ts: par.ts, author: par.author, anon: !!par.anon };
+      }
+      const k = `msg:${gid}:general:${ts}:${id}`;
+      store[k] = msg; persist();
+      sendJSON(res, 200, { ok: true, key: k, message: msg });
+    });
+  }
+
+  // Voting: a single-answer poll keeps one vote per member (a new choice
+  // replaces the old, the same one again removes it); a multiple-answer poll
+  // toggles each option. `updatedAt` is bumped so delta polls carry it.
+  if (p === "/api/poll/vote" && req.method === "POST") {
+    const body = await readBody(req);
+    const key = normKey(body.key); const sessionId = body.sessionId;
+    const gid = String(body.gid || ""); const msgKey = String(body.msgKey || ""); const optionId = String(body.optionId || "");
+    return atomic(() => {
+      if (!sessionOk(key, sessionId)) return sendJSON(res, 200, { ok: false, error: "auth" });
+      const g = store[groupKey(gid)];
+      if (!g || !g.members[key]) return sendJSON(res, 200, { ok: false, error: "not-member" });
+      if (!msgKey.startsWith(`msg:${gid}:general:`) || !store[msgKey]) return sendJSON(res, 200, { ok: false, error: "not-found" });
+      const m = store[msgKey];
+      if (!m.poll || !m.poll.options.some((o) => o.id === optionId)) return sendJSON(res, 200, { ok: false, error: "not-found" });
+      const votes = (m.poll.votes && typeof m.poll.votes === "object") ? m.poll.votes : {};
+      const had = Array.isArray(votes[optionId]) && votes[optionId].includes(key);
+      if (!m.poll.multi) {
+        for (const [o, who] of Object.entries(votes)) {
+          const rest = Array.isArray(who) ? who.filter((k) => k !== key) : [];
+          if (rest.length) votes[o] = rest; else delete votes[o];
+        }
+        if (!had) votes[optionId] = [...(votes[optionId] || []), key];
+      } else if (had) {
+        votes[optionId] = votes[optionId].filter((k) => k !== key);
+        if (!votes[optionId].length) delete votes[optionId];
+      } else votes[optionId] = [...(votes[optionId] || []), key];
+      m.poll.votes = votes;
+      m.updatedAt = now();
+      persist();
+      sendJSON(res, 200, { ok: true, key: msgKey, message: m });
+    });
+  }
+
   // Only the author may edit a message (admins can delete, not rewrite). The
   // edit keeps the message's place and identity, stamps `editedAt` so every
   // client can mark it "edited", and bumps `updatedAt` for the delta polls.
@@ -498,6 +565,7 @@ const server = http.createServer(async (req, res) => {
       if (!msgKey.startsWith(`msg:${gid}:general:`) || !store[msgKey] || store[msgKey].system) return sendJSON(res, 200, { ok: false, error: "not-found" });
       const m = store[msgKey];
       if (m.author !== key) return sendJSON(res, 200, { ok: false, error: "forbidden" });
+      if (m.poll) return sendJSON(res, 200, { ok: false, error: "not-editable" }); // changing a question would change what people voted on
       if (!text && !m.image) return sendJSON(res, 200, { ok: false, error: "empty" });
       if (text !== m.text) { m.text = text; m.editedAt = now(); m.updatedAt = m.editedAt; persist(); }
       sendJSON(res, 200, { ok: true, key: msgKey, message: m });

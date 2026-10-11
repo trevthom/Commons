@@ -35,6 +35,14 @@ Open the app in a browser, or install it as a PWA on a phone.
   phone keyboards (such as Gboard's GIF button) and pasted pictures. They are
   attached like any picture. iPhone keyboards copy a GIF instead: paste it into
   the box.
+- **Polls** — the chart button beside the picture button opens a sheet: write a
+  question, give it 2–10 options, and choose whether people may pick more than
+  one answer. The poll appears in the chat as a message. Tap an option to vote;
+  tap your own choice again to take your vote back (in a one-answer poll,
+  tapping a different option moves your vote). Each option shows its count and
+  its share of the voters. A poll can't be edited, since that would change what
+  people voted on; delete it and make a new one. Like any message, a poll is
+  deleted 30 days after it is posted.
 - **Emoji picker** in the composer — emoji are ordinary text, so they send
   through the same path as any message.
 - **Reactions** on any message: the ⋮ menu opens with 👍 👎 ❤️ 🔥 💯, and the ▼

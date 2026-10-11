@@ -187,6 +187,43 @@ const newAccount = async () => (await post("/api/account/create", {})).json;
   ok("deleting a picture message deletes the file", picDel.json && picDel.json.ok && (await fetch(BASE + picUrl)).status === 404);
   ok("an unknown picture path is a JSON 404", (await get("/api/image/../../data.json")).status === 404);
 
+  // --- polls: members create and vote; votes are one per member unless multi ---
+  const pollOpts = ["Park", "Library", "Cafe"];
+  const noSessPoll = await post("/api/poll/create", { key: memberKey, gid, question: "Where?", options: pollOpts });
+  ok("a poll needs the session", noSessPoll.json && noSessPoll.json.error === "auth");
+  const strangerPoll = await post("/api/poll/create", { key: stranger.key, sessionId: stranger.sessionId, gid, question: "Where?", options: pollOpts });
+  ok("a non-member cannot create a poll", strangerPoll.json && strangerPoll.json.error === "not-member");
+  ok("a poll needs a question", (await post("/api/poll/create", { key: memberKey, sessionId: memberSid, gid, question: "  ", options: pollOpts })).json.error === "empty");
+  ok("a poll needs two options", (await post("/api/poll/create", { key: memberKey, sessionId: memberSid, gid, question: "Where?", options: ["Park", "  "] })).json.error === "too-few-options");
+  ok("a poll's options must differ", (await post("/api/poll/create", { key: memberKey, sessionId: memberSid, gid, question: "Where?", options: ["Park", "park"] })).json.error === "duplicate-options");
+  ok("a poll has at most ten options", (await post("/api/poll/create", { key: memberKey, sessionId: memberSid, gid, question: "Where?", options: Array.from({ length: 11 }, (_, i) => "o" + i) })).json.error === "too-many-options");
+  const poll = await post("/api/poll/create", { key: memberKey, sessionId: memberSid, gid, question: "Where should we meet?", options: pollOpts, multi: false });
+  ok("a member can create a poll", poll.json && poll.json.ok && poll.json.message.text === "Where should we meet?" && poll.json.message.poll.options.length === 3 && poll.json.message.author === memberKey, poll.json);
+  const pollKey = poll.json.key;
+  const vote = (who, sid, optionId, k = pollKey) => post("/api/poll/vote", { key: who, sessionId: sid, gid, msgKey: k, optionId });
+  ok("a non-member cannot vote", (await vote(stranger.key, stranger.sessionId, "1")).json.error === "not-member");
+  ok("an unknown option is rejected", (await vote(ownerKey, ownerSid2, "99")).json.error === "not-found");
+  const v1 = await vote(ownerKey, ownerSid2, "1");
+  ok("a member can vote", v1.json && v1.json.ok && v1.json.message.poll.votes["1"].includes(ownerKey));
+  const v2 = await vote(ownerKey, ownerSid2, "2");
+  ok("a single-answer poll moves your vote", v2.json.message.poll.votes["2"].includes(ownerKey) && !v2.json.message.poll.votes["1"]);
+  const v3 = await vote(memberKey, memberSid, "2");
+  ok("several members can pick the same option", v3.json.message.poll.votes["2"].length === 2);
+  const v4 = await vote(ownerKey, ownerSid2, "2");
+  ok("voting for your own choice again removes the vote", v4.json.message.poll.votes["2"].length === 1 && !v4.json.message.poll.votes["2"].includes(ownerKey));
+  const afterVote = await get(`/api/mget?prefix=${encodeURIComponent(`msg:${gid}:general:`)}&since=${v4.json.message.updatedAt - 1}`);
+  ok("a vote comes through a delta read", afterVote.json.items.some(([k]) => k === pollKey));
+  ok("a poll cannot be edited", (await post("/api/message/edit", { key: memberKey, sessionId: memberSid, gid, msgKey: pollKey, text: "changed" })).json.error === "not-editable");
+  ok("only polls take votes", (await vote(ownerKey, ownerSid2, "1", msgKey1)).json.error === "not-found");
+  const multiPoll = await post("/api/poll/create", { key: memberKey, sessionId: memberSid, gid, question: "Which days?", options: ["Sat", "Sun"], multi: true });
+  const m1 = await vote(ownerKey, ownerSid2, "1", multiPoll.json.key);
+  const m2 = await vote(ownerKey, ownerSid2, "2", multiPoll.json.key);
+  ok("a multiple-answer poll keeps every choice", m2.json.message.poll.votes["1"].includes(ownerKey) && m2.json.message.poll.votes["2"].includes(ownerKey));
+  const m3 = await vote(ownerKey, ownerSid2, "1", multiPoll.json.key);
+  ok("a multiple-answer poll toggles each option", !m3.json.message.poll.votes["1"] && m3.json.message.poll.votes["2"].includes(ownerKey));
+  const pollSearch = await post("/api/message/search", { key: memberKey, sessionId: memberSid, gid, q: "meet?" });
+  ok("search finds a poll by its question", pollSearch.json && pollSearch.json.results.some((r) => r.key === pollKey));
+
   // --- search runs server-side over the whole history ---
   const search = await post("/api/message/search", { key: memberKey, sessionId: memberSid, gid, q: "🔥" });
   ok("search finds a message by emoji", search.json && search.json.ok && search.json.results.length === 1 && search.json.results[0].key === msgKey1);
