@@ -2,7 +2,7 @@ const { useState, useEffect, useLayoutEffect, useRef, useCallback } = React;
 const {
   Users, MapPin, Shield, Send, Eye, EyeOff, Link2, QrCode, Search,
   X, Trash2, UserMinus, Crown, LogIn, Plus, Copy, Check, MessageSquare, ChevronLeft, Ban, Key, LogOut,
-  MoreVertical, CornerUpLeft, Bell, BellOff, Smile, Pin, PinOff, ChevronDown, Settings, Pencil, ImagePlus, BarChart3
+  MoreVertical, CornerUpLeft, Bell, BellOff, Smile, Pin, PinOff, ChevronDown, ChevronRight, Settings, Pencil, ImagePlus, BarChart3
 } = lucide;
 
 // ---------- API ----------
@@ -715,6 +715,10 @@ function Composer({ me, onSend, placeholder, editing, uploadImage, onPoll }) {
   const [attach, setAttach] = useState(null); // { file, previewUrl, promise, done }
   const [attachErr, setAttachErr] = useState("");
   const [sending, setSending] = useState(false);
+  // While there is text in the box, the icons on its left fold away to leave
+  // room to type; the arrow button brings them back (and folds them again).
+  // Sending (or clearing) the box shows them again by itself.
+  const [toolsOpen, setToolsOpen] = useState(false);
   const inputRef = useRef(null);
   const fileRef = useRef(null);
   const attachRef = useRef(null);
@@ -725,6 +729,7 @@ function Composer({ me, onSend, placeholder, editing, uploadImage, onPoll }) {
   const setBox = (t) => {
     const el = inputRef.current; if (!el) return;
     el.textContent = t; setText(t);
+    if (!t) setToolsOpen(false);
     if (document.activeElement === el && t) { const r = document.createRange(); r.selectNodeContents(el); r.collapse(false); const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r); }
   };
   // Insert plain text at the caret (falls back to appending).
@@ -747,6 +752,7 @@ function Composer({ me, onSend, placeholder, editing, uploadImage, onPoll }) {
     const t = readBox(el);
     if (!t.trim() && el.innerHTML && !el.textContent) el.innerHTML = ""; // a lone <br> left by deleting
     setText(t);
+    if (!t) setToolsOpen(false);
   };
 
   const dropAttach = () => {
@@ -827,6 +833,7 @@ function Composer({ me, onSend, placeholder, editing, uploadImage, onPoll }) {
   });
   useEffect(() => () => { const a = attachRef.current; if (a && a.previewUrl) URL.revokeObjectURL(a.previewUrl); }, []);
 
+  const collapsed = !!text && !toolsOpen;
   const editKey = editing ? editing._key : null;
   useEffect(() => {
     if (editKey) { setEmojiOpen(false); if (inputRef.current) inputRef.current.focus(); setBox(editing.text || ""); }
@@ -848,13 +855,17 @@ function Composer({ me, onSend, placeholder, editing, uploadImage, onPoll }) {
     {emojiOpen && <div data-role="emoji-panel" style={S.emojiPanel} onClick={(e) => e.stopPropagation()}>
       {EMOJI.map((e) => <button key={e} style={S.emojiBtn} onMouseDown={(ev) => ev.preventDefault()} onClick={() => insertText(e)}>{e}</button>)}
     </div>}
-    <div style={S.composerTools}>
+    {allowImage && <input ref={fileRef} type="file" accept="image/*" data-role="image-input" style={{ display: "none" }} onChange={pickImage} />}
+    <div data-role="composer-tools" data-collapsed={collapsed ? "1" : "0"} style={S.composerTools}>
+      {text && <button data-role="composer-tools-toggle" style={{ ...S.composerIcon, color: "#9fb0bd" }} title={collapsed ? "Show options" : "Hide options"}
+        onMouseDown={(ev) => ev.preventDefault()} onClick={() => setToolsOpen((v) => !v)}>{collapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}</button>}
+      {!collapsed && <>
       <button style={{ ...S.composerIcon, color: anon ? ACCENT : "#9fb0bd", ...(editing ? { opacity: .35, cursor: "default" } : {}) }} disabled={!!editing}
         title={editing ? "An edit keeps the message's name" : anon ? "Sending anonymously" : "Sending as " + me.username} onClick={() => setAnonOverride(!anon)}>{anon ? <EyeOff size={18} /> : <Eye size={18} />}</button>
       <button style={{ ...S.composerIcon, color: emojiOpen ? ACCENT : "#9fb0bd" }} title="Emoji" onMouseDown={(ev) => ev.preventDefault()} onClick={(e) => { e.stopPropagation(); setEmojiOpen((v) => !v); }}><Smile size={18} /></button>
       {allowImage && !editing && <button style={{ ...S.composerIcon, color: attach ? ACCENT : "#9fb0bd" }} title="Send a picture" onClick={() => fileRef.current && fileRef.current.click()}><ImagePlus size={18} /></button>}
-      {allowImage && <input ref={fileRef} type="file" accept="image/*" data-role="image-input" style={{ display: "none" }} onChange={pickImage} />}
       {onPoll && !editing && <button style={{ ...S.composerIcon, color: "#9fb0bd" }} title="Create a poll" onMouseDown={(ev) => ev.preventDefault()} onClick={onPoll}><BarChart3 size={18} /></button>}
+      </>}
     </div>
     <div ref={inputRef} contentEditable suppressContentEditableWarning role="textbox" aria-multiline="true" aria-label={placeholder}
       data-role="composer-input" data-placeholder={placeholder} data-empty={text ? "0" : "1"} style={S.composerInput}

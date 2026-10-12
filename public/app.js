@@ -30,6 +30,7 @@ const {
   Pin,
   PinOff,
   ChevronDown,
+  ChevronRight,
   Settings,
   Pencil,
   ImagePlus,
@@ -718,6 +719,7 @@ function Composer({ me, onSend, placeholder, editing, uploadImage, onPoll }) {
   const [attach, setAttach] = useState(null);
   const [attachErr, setAttachErr] = useState("");
   const [sending, setSending] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
   const inputRef = useRef(null);
   const fileRef = useRef(null);
   const attachRef = useRef(null);
@@ -729,6 +731,7 @@ function Composer({ me, onSend, placeholder, editing, uploadImage, onPoll }) {
     if (!el) return;
     el.textContent = t;
     setText(t);
+    if (!t) setToolsOpen(false);
     if (document.activeElement === el && t) {
       const r = document.createRange();
       r.selectNodeContents(el);
@@ -762,6 +765,7 @@ function Composer({ me, onSend, placeholder, editing, uploadImage, onPoll }) {
     const t = readBox(el);
     if (!t.trim() && el.innerHTML && !el.textContent) el.innerHTML = "";
     setText(t);
+    if (!t) setToolsOpen(false);
   };
   const dropAttach = () => {
     const a = attachRef.current;
@@ -870,6 +874,7 @@ function Composer({ me, onSend, placeholder, editing, uploadImage, onPoll }) {
     const a = attachRef.current;
     if (a && a.previewUrl) URL.revokeObjectURL(a.previewUrl);
   }, []);
+  const collapsed = !!text && !toolsOpen;
   const editKey = editing ? editing._key : null;
   useEffect(() => {
     if (editKey) {
@@ -885,7 +890,17 @@ function Composer({ me, onSend, placeholder, editing, uploadImage, onPoll }) {
     document.addEventListener("click", close);
     return () => document.removeEventListener("click", close);
   }, [emojiOpen]);
-  return /* @__PURE__ */ React.createElement(React.Fragment, null, attach && !editing && /* @__PURE__ */ React.createElement("div", { "data-role": "attach-bar", style: S.attachBar }, /* @__PURE__ */ React.createElement("img", { src: attach.previewUrl, alt: "Picture to send", style: S.attachThumb }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0, fontSize: 13, color: attachErr ? "#f87171" : MUTED } }, attachErr || (sending ? "Sending\u2026" : "")), !sending && /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Remove picture", onClick: dropAttach }, /* @__PURE__ */ React.createElement(X, { size: 16 }))), /* @__PURE__ */ React.createElement("div", { style: S.composer }, emojiOpen && /* @__PURE__ */ React.createElement("div", { "data-role": "emoji-panel", style: S.emojiPanel, onClick: (e) => e.stopPropagation() }, EMOJI.map((e) => /* @__PURE__ */ React.createElement("button", { key: e, style: S.emojiBtn, onMouseDown: (ev) => ev.preventDefault(), onClick: () => insertText(e) }, e))), /* @__PURE__ */ React.createElement("div", { style: S.composerTools }, /* @__PURE__ */ React.createElement(
+  return /* @__PURE__ */ React.createElement(React.Fragment, null, attach && !editing && /* @__PURE__ */ React.createElement("div", { "data-role": "attach-bar", style: S.attachBar }, /* @__PURE__ */ React.createElement("img", { src: attach.previewUrl, alt: "Picture to send", style: S.attachThumb }), /* @__PURE__ */ React.createElement("div", { style: { flex: 1, minWidth: 0, fontSize: 13, color: attachErr ? "#f87171" : MUTED } }, attachErr || (sending ? "Sending\u2026" : "")), !sending && /* @__PURE__ */ React.createElement("button", { style: S.iconBtn, title: "Remove picture", onClick: dropAttach }, /* @__PURE__ */ React.createElement(X, { size: 16 }))), /* @__PURE__ */ React.createElement("div", { style: S.composer }, emojiOpen && /* @__PURE__ */ React.createElement("div", { "data-role": "emoji-panel", style: S.emojiPanel, onClick: (e) => e.stopPropagation() }, EMOJI.map((e) => /* @__PURE__ */ React.createElement("button", { key: e, style: S.emojiBtn, onMouseDown: (ev) => ev.preventDefault(), onClick: () => insertText(e) }, e))), allowImage && /* @__PURE__ */ React.createElement("input", { ref: fileRef, type: "file", accept: "image/*", "data-role": "image-input", style: { display: "none" }, onChange: pickImage }), /* @__PURE__ */ React.createElement("div", { "data-role": "composer-tools", "data-collapsed": collapsed ? "1" : "0", style: S.composerTools }, text && /* @__PURE__ */ React.createElement(
+    "button",
+    {
+      "data-role": "composer-tools-toggle",
+      style: { ...S.composerIcon, color: "#9fb0bd" },
+      title: collapsed ? "Show options" : "Hide options",
+      onMouseDown: (ev) => ev.preventDefault(),
+      onClick: () => setToolsOpen((v) => !v)
+    },
+    collapsed ? /* @__PURE__ */ React.createElement(ChevronRight, { size: 18 }) : /* @__PURE__ */ React.createElement(ChevronLeft, { size: 18 })
+  ), !collapsed && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(
     "button",
     {
       style: { ...S.composerIcon, color: anon ? ACCENT : "#9fb0bd", ...editing ? { opacity: 0.35, cursor: "default" } : {} },
@@ -897,7 +912,7 @@ function Composer({ me, onSend, placeholder, editing, uploadImage, onPoll }) {
   ), /* @__PURE__ */ React.createElement("button", { style: { ...S.composerIcon, color: emojiOpen ? ACCENT : "#9fb0bd" }, title: "Emoji", onMouseDown: (ev) => ev.preventDefault(), onClick: (e) => {
     e.stopPropagation();
     setEmojiOpen((v) => !v);
-  } }, /* @__PURE__ */ React.createElement(Smile, { size: 18 })), allowImage && !editing && /* @__PURE__ */ React.createElement("button", { style: { ...S.composerIcon, color: attach ? ACCENT : "#9fb0bd" }, title: "Send a picture", onClick: () => fileRef.current && fileRef.current.click() }, /* @__PURE__ */ React.createElement(ImagePlus, { size: 18 })), allowImage && /* @__PURE__ */ React.createElement("input", { ref: fileRef, type: "file", accept: "image/*", "data-role": "image-input", style: { display: "none" }, onChange: pickImage }), onPoll && !editing && /* @__PURE__ */ React.createElement("button", { style: { ...S.composerIcon, color: "#9fb0bd" }, title: "Create a poll", onMouseDown: (ev) => ev.preventDefault(), onClick: onPoll }, /* @__PURE__ */ React.createElement(BarChart3, { size: 18 }))), /* @__PURE__ */ React.createElement(
+  } }, /* @__PURE__ */ React.createElement(Smile, { size: 18 })), allowImage && !editing && /* @__PURE__ */ React.createElement("button", { style: { ...S.composerIcon, color: attach ? ACCENT : "#9fb0bd" }, title: "Send a picture", onClick: () => fileRef.current && fileRef.current.click() }, /* @__PURE__ */ React.createElement(ImagePlus, { size: 18 })), onPoll && !editing && /* @__PURE__ */ React.createElement("button", { style: { ...S.composerIcon, color: "#9fb0bd" }, title: "Create a poll", onMouseDown: (ev) => ev.preventDefault(), onClick: onPoll }, /* @__PURE__ */ React.createElement(BarChart3, { size: 18 })))), /* @__PURE__ */ React.createElement(
     "div",
     {
       ref: inputRef,

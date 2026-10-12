@@ -43,6 +43,10 @@ Open the app in a browser, or install it as a PWA on a phone.
   its share of the voters. A poll can't be edited, since that would change what
   people voted on; delete it and make a new one. Like any message, a poll is
   deleted 30 days after it is posted.
+- **Room to type** — while there is text in the message box, the icons to its
+  left (anonymous, emoji, picture, poll) fold away so the text has more room.
+  The small arrow at the left brings them back, and folds them again. They come
+  back by themselves when the box is empty.
 - **Emoji picker** in the composer — emoji are ordinary text, so they send
   through the same path as any message.
 - **Reactions** on any message: the ⋮ menu opens with 👍 👎 ❤️ 🔥 💯, and the ▼

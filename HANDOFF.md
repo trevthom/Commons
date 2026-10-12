@@ -299,6 +299,12 @@ Reads — open; a group id or invite is the capability:
   and the text is read with `innerText` (`readBox`). The placeholder is a CSS
   `::before` on `data-empty="1"`. `send` reads the box itself, not React
   state, because a keyboard can commit text and Enter in one go.
+- **Collapsing icons**: while the box has text (`collapsed = !!text && !toolsOpen`
+  in `Composer`), the icons beside it are not rendered and only a toggle
+  (`data-role="composer-tools-toggle"`, a chevron) shows; `toolsOpen` lets the
+  sender bring them back. The row (`data-role="composer-tools"`) carries
+  `data-collapsed`. An empty box resets `toolsOpen`, so the icons return after a
+  send. The hidden file input stays mounted. An edit loads text, so it folds too.
 - **Pictures**: the General composer (and the thread composer) has a picture
   button (`title="Send a picture"`, hidden `data-role="image-input"`). A
   picked, pasted or keyboard picture is uploaded **at once**
@@ -356,7 +362,7 @@ Reads — open; a group id or invite is the capability:
   opens upward instead of being clipped by the feed's edge and covered by the
   composer.
 - After changing any file in `public/`, **bump `CACHE` in `public/sw.js`**
-  (currently `commons-v17`; go to `commons-v18`, …) so installed clients drop the
+  (currently `commons-v18`; go to `commons-v19`, …) so installed clients drop the
   old shell. The worker is network-first now, so the bump mainly guarantees
   eviction.
 

@@ -225,6 +225,31 @@ await sleep(1500);
 const multi = [...document.querySelectorAll('[data-role="feed"] div')].find((d) => d.textContent === "line one\nline two");
 check("a multi-line message keeps its line break", !!multi && multi.style.whiteSpace === "pre-wrap");
 
+// --- the icons beside the box fold away while typing ---
+{
+  const cbox = inputByPlaceholder("Message…");
+  const tools = () => document.querySelector('[data-role="composer-tools"]');
+  const toggle = () => document.querySelector('[data-role="composer-tools-toggle"]');
+  setInput(cbox, "");
+  await sleep(150);
+  check("an empty box shows every icon and no toggle", !!titled("Emoji") && titled("Send a picture") && titled("Create a poll") && !toggle() && tools().getAttribute("data-collapsed") === "0");
+  setInput(cbox, "typing now");
+  await sleep(150);
+  check("typing folds the icons away", tools().getAttribute("data-collapsed") === "1" && !titled("Emoji") && !titled("Send a picture") && !titled("Create a poll") && !document.querySelector('[title^="Sending as"]'));
+  check("a toggle offers them back", !!toggle() && toggle().title === "Show options");
+  toggle().click();
+  await sleep(150);
+  check("the toggle shows the icons again while there is text", titled("Emoji") && titled("Send a picture") && titled("Create a poll") && toggle().title === "Hide options" && valueOf(cbox) === "typing now");
+  toggle().click();
+  await sleep(150);
+  check("the toggle folds them again", !titled("Emoji") && tools().getAttribute("data-collapsed") === "1");
+  toggle().click();
+  await sleep(150);
+  setInput(cbox, "");
+  await sleep(150);
+  check("emptying the box shows the icons again with no toggle", titled("Emoji") && !toggle() && tools().getAttribute("data-collapsed") === "0");
+}
+
 // --- editing your own message ---
 const optsFor = (text) => [...document.querySelectorAll('[title="Message options"]')].find((b) => (b.parentElement.parentElement.textContent || "").includes(text));
 optsFor("emoji test 🔥").click();
