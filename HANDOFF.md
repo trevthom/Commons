@@ -299,12 +299,15 @@ Reads — open; a group id or invite is the capability:
   and the text is read with `innerText` (`readBox`). The placeholder is a CSS
   `::before` on `data-empty="1"`. `send` reads the box itself, not React
   state, because a keyboard can commit text and Enter in one go.
-- **Collapsing icons**: while the box has text (`collapsed = !!text && !toolsOpen`
-  in `Composer`), the icons beside it are not rendered and only a toggle
-  (`data-role="composer-tools-toggle"`, a chevron) shows; `toolsOpen` lets the
-  sender bring them back. The row (`data-role="composer-tools"`) carries
-  `data-collapsed`. An empty box resets `toolsOpen`, so the icons return after a
-  send. The hidden file input stays mounted. An edit loads text, so it folds too.
+- **The + menu**: the left of the message box is one circle button
+  (`data-role="composer-plus"`, a `Plus` that turns 45° when open). It toggles
+  `menuOpen`, which shows `data-role="composer-menu"` above the box: rows
+  (`composer-menu-item`) for Anonymous (an ON/OFF pill; the menu stays open so
+  the new state is visible), Emoji, Picture and Poll. Emoji/Picture/Poll close
+  the menu; an outside click closes it too. Rows cancel mouse-down so the box
+  keeps focus (the phone keyboard stays up). With Anonymous on, the + gets an
+  accent ring and `data-role="anon-badge"`. While editing, Anonymous is
+  disabled and Picture/Poll are hidden. The hidden file input is always mounted.
 - **Pictures**: the General composer (and the thread composer) has a picture
   button (`title="Send a picture"`, hidden `data-role="image-input"`). A
   picked, pasted or keyboard picture is uploaded **at once**
