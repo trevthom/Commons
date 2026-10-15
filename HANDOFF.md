@@ -65,7 +65,7 @@ with `freebuff-preview start`.
 | `account:<16-char key>` | `{ key, createdAt, sessionId }` — **the login credential itself** |
 | `group:<id>` | `{ id, name, createdAt, ownerKey, admins[], members{key:{username,joinedAt,lastNameChange}}, usernames{lowercased→key}, banned[], invite, inviteOnce, pins[] }` |
 | `msg:<gid>:general:<ts>:<uid>` | `{ id, ts, text, anon, author, authorName, gid, replyTo?, image?, poll?, reactions?, editedAt?, updatedAt? }` (or `{ system:true, text }`) |
-| `post:<gid>:<ts>:<uid>` | `{ id, ts, title, text, anon, author, authorName, gid, replies[] }` |
+| `post:<gid>:<ts>:<uid>` | `{ id, ts, title, text, anon, author, authorName, gid, replies[], editedAt?, updatedAt? }` (a reply is `{ id, ts, text, anon, author, authorName, gid, editedAt? }`) |
 
 Accounts are anonymous login keys; there is no email/password and no recovery.
 Logging in rotates `sessionId`, which invalidates other devices.
@@ -118,6 +118,8 @@ Content — authenticated; **the server sets `author`/`authorName` from the sess
 - `POST /api/message/react` `{ key, sessionId, gid, msgKey, emoji }` → `{ ok, key, message }` — any member; sets the caller's one reaction (a different emoji replaces it, the same emoji removes it), only accepts the fixed `REACTIONS` set, and bumps `updatedAt`
 - `POST /api/message/search` `{ key, sessionId, gid, q }` → `{ ok, results[], total }` — scans the whole history server-side
 - `POST /api/post/create` `{ key, sessionId, gid, title, text, anon }` → `{ ok, key, post }`
+- `POST /api/post/edit` `{ key, sessionId, gid, postKey, title, text }` → `{ ok, key, post }` — **author only** (admins may delete, never rewrite); replaces `title`/`text`, stamps `editedAt` and bumps `updatedAt` (so it rides the delta polls). Author, anonymity and place are untouched; errors `forbidden`, `empty`. Saving without a change leaves `editedAt` alone.
+- `POST /api/post/editReply` `{ key, sessionId, gid, postKey, replyId, text }` → `{ ok, key, post }` — reply **author only**; stamps the reply's `editedAt` and bumps the post's `updatedAt`.
 - `POST /api/post/delete` `{ key, sessionId, gid, postKey }` — author or admin
 - `POST /api/post/reply` `{ key, sessionId, gid, postKey, text, anon }`
 - `POST /api/post/deleteReply` `{ key, sessionId, gid, postKey, replyId }` — reply author or admin
@@ -329,6 +331,14 @@ Reads — open; a group id or invite is the capability:
   its share of the *voters* (so a multiple-answer poll's shares can add up to
   more than 100%), the count, and a voter total. Votes update the local cache
   from the server's reply, like reactions. A poll's menu has no Edit.
+- **Editing forum posts and replies**: the author (only) sees a pencil beside
+  the trash on their own post (`data-role="post-edit"`) and reply
+  (`data-role="reply-edit"`). It opens `EditPostModal` (`edit-title` for posts
+  only, `edit-body`, `edit-save`) loaded with the current text; saving calls
+  `postEdit` / `postEditReply` and replaces the post in the local cache from the
+  reply. The sheet shows how it was posted ("Posted anonymously — it stays
+  anonymous."); anonymity cannot be changed. The shared `Stamp` shows
+  `edited · ` before the time, as in General.
 - **Editing**: the author's message menu has "Edit message". It opens an
   "Editing message" banner (`data-role="edit-banner"`, which replaces any reply
   banner) and loads the text into the box; the send button becomes a check and
@@ -365,7 +375,7 @@ Reads — open; a group id or invite is the capability:
   opens upward instead of being clipped by the feed's edge and covered by the
   composer.
 - After changing any file in `public/`, **bump `CACHE` in `public/sw.js`**
-  (currently `commons-v18`; go to `commons-v19`, …) so installed clients drop the
+  (currently `commons-v19`; go to `commons-v20`, …) so installed clients drop the
   old shell. The worker is network-first now, so the bump mainly guarantees
   eviction.
 

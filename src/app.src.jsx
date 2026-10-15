@@ -36,6 +36,8 @@ const pollVote = (s, gid, msgKey, optionId) => api.post("/api/poll/vote", auth(s
 const messageReact = (s, gid, msgKey, emoji) => api.post("/api/message/react", auth(s, { gid, msgKey, emoji }));
 const messageSearch = (s, gid, q) => api.post("/api/message/search", auth(s, { gid, q }));
 const postCreate = (s, gid, title, text, anon) => api.post("/api/post/create", auth(s, { gid, title, text, anon }));
+const postEdit = (s, gid, postKey, title, text) => api.post("/api/post/edit", auth(s, { gid, postKey, title, text }));
+const postEditReply = (s, gid, postKey, replyId, text) => api.post("/api/post/editReply", auth(s, { gid, postKey, replyId, text }));
 const postDelete = (s, gid, postKey) => api.post("/api/post/delete", auth(s, { gid, postKey }));
 const postReply = (s, gid, postKey, text, anon) => api.post("/api/post/reply", auth(s, { gid, postKey, text, anon }));
 const postDeleteReply = (s, gid, postKey, replyId) => api.post("/api/post/deleteReply", auth(s, { gid, postKey, replyId }));
@@ -1382,6 +1384,20 @@ function Forum({ session, group, me, isAdmin, mutes }) {
     reload();
   };
   const del = async (p) => { const r = await postDelete(session, group.id, p._key); if (r && r.ok) dropLocal(p._key); reload(); };
+  // Edits keep the post's place, author and anonymity; the server stamps
+  // `editedAt`, which every client shows as "edited" beside the time.
+  const edit = async (p, title, body) => {
+    const r = await postEdit(session, group.id, p._key, title, body);
+    if (r && r.ok && r.post) replaceLocal(p._key, { ...r.post, _key: p._key });
+    reload();
+    return !!(r && r.ok);
+  };
+  const editReply = async (p, rid, text) => {
+    const r = await postEditReply(session, group.id, p._key, rid, text);
+    if (r && r.ok && r.post) replaceLocal(p._key, { ...r.post, _key: p._key });
+    reload();
+    return !!(r && r.ok);
+  };
   const addReply = async (p, text, anon) => {
     const r = await postReply(session, group.id, p._key, text, anon);
     if (r && r.ok && r.post) replaceLocal(p._key, { ...r.post, _key: p._key });
@@ -1400,7 +1416,7 @@ function Forum({ session, group, me, isAdmin, mutes }) {
   return <div style={S.chatArea}>
     <div style={S.feed}>
       {sorted.length === 0 && <div style={S.empty}><MapPin size={28} style={{ opacity: .5 }} /><p style={S.muted}>No posts yet. Share something with the forum.</p></div>}
-      {visible.map((p) => <PostCard key={p.id} post={p} session={session} me={me} isAdmin={isAdmin} onDelete={() => del(p)} onReply={(t, a) => addReply(p, t, a)} onDeleteReply={(rid) => delReply(p, rid)} />)}
+      {visible.map((p) => <PostCard key={p.id} post={p} session={session} me={me} isAdmin={isAdmin} onDelete={() => del(p)} onEdit={(t, b) => edit(p, t, b)} onEditReply={(rid, t) => editReply(p, rid, t)} onReply={(t, a) => addReply(p, t, a)} onDeleteReply={(rid) => delReply(p, rid)} />)}
       {visible.length < sorted.length && <button data-role="show-earlier" style={S.showEarlier} onClick={() => setShown(shown + 40)}>Show older posts ({sorted.length - visible.length})</button>}
     </div>
     <div style={S.composer}><button style={S.primary} onClick={() => setComposing(true)}><Plus size={18} /> New post</button></div>
@@ -1408,31 +1424,64 @@ function Forum({ session, group, me, isAdmin, mutes }) {
   </div>;
 }
 
-function PostCard({ post, session, me, isAdmin, onDelete, onReply, onDeleteReply }) {
+function PostCard({ post, session, me, isAdmin, onDelete, onEdit, onEditReply, onReply, onDeleteReply }) {
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(null); // "post" | a reply id
   const mine = post.author === session.key;
   const replies = post.replies || [];
   return <div style={S.post} className="reveal">
     <div style={S.bubbleHead}>
       <span style={{ color: post.anon ? "#2dd4bf" : "#7dd3fc", fontWeight: 600 }}>{post.anon && <EyeOff size={11} style={{ verticalAlign: -1, marginRight: 3 }} />}{senderLabel(post)}</span>
-      {(isAdmin || mine) && <button style={S.miniDel} onClick={onDelete}><Trash2 size={12} /></button>}
+      {mine && <button data-role="post-edit" style={{ ...S.miniDel, marginLeft: "auto" }} title="Edit post" onClick={() => setEditing("post")}><Pencil size={12} /></button>}
+      {(isAdmin || mine) && <button data-role="post-delete" style={{ ...S.miniDel, ...(mine ? { marginLeft: 0 } : {}) }} title="Delete post" onClick={onDelete}><Trash2 size={12} /></button>}
     </div>
     {post.title && <div style={S.postTitle}>{post.title}</div>}
     <div style={{ ...S.msgText, color: "#cdd9e1" }}>{post.text}</div>
-    <div data-role="msg-stamp" style={S.stamp}>{fmtStamp(post.ts)}</div>
+    <Stamp m={post} />
     <button style={S.replyToggle} onClick={() => setOpen((o) => !o)}>{replies.length} repl{replies.length === 1 ? "y" : "ies"} {open ? "▴" : "▾"}</button>
     {open && <div style={S.replyZone}>
       {replies.map((r) => { const rmine = r.author === session.key; return <div key={r.id} style={S.reply}>
         <div style={S.bubbleHead}>
           <span style={{ color: r.anon ? "#2dd4bf" : "#7dd3fc", fontWeight: 600, fontSize: 12 }}>{r.anon && <EyeOff size={10} style={{ verticalAlign: -1, marginRight: 3 }} />}{senderLabel(r)}</span>
-          {(isAdmin || rmine) && <button style={S.miniDel} onClick={() => onDeleteReply(r.id)}><Trash2 size={11} /></button>}
+          {rmine && <button data-role="reply-edit" style={{ ...S.miniDel, marginLeft: "auto" }} title="Edit reply" onClick={() => setEditing(r.id)}><Pencil size={11} /></button>}
+          {(isAdmin || rmine) && <button style={{ ...S.miniDel, ...(rmine ? { marginLeft: 0 } : {}) }} title="Delete reply" onClick={() => onDeleteReply(r.id)}><Trash2 size={11} /></button>}
         </div>
         <div style={{ ...S.msgText, fontSize: 14 }}>{r.text}</div>
-        <div data-role="msg-stamp" style={S.stamp}>{fmtStamp(r.ts)}</div>
+        <Stamp m={r} />
       </div>; })}
       <Composer me={me} onSend={(t, a) => onReply(t, a)} placeholder="Add a reply…" />
     </div>}
+    {editing === "post" && <EditPostModal post={post} onClose={() => setEditing(null)} onSave={onEdit} />}
+    {editing && editing !== "post" && (() => { const r = replies.find((x) => x.id === editing); return r ? <EditPostModal reply={r} onClose={() => setEditing(null)} onSave={(_t, text) => onEditReply(r.id, text)} /> : null; })()}
   </div>;
+}
+
+// The sheet for changing one of your forum posts (title and text) or replies
+// (text). The name or anonymity it was posted with stays as it was.
+function EditPostModal({ post, reply, onClose, onSave }) {
+  const item = post || reply;
+  const [title, setTitle] = useState(post ? post.title || "" : "");
+  const [body, setBody] = useState(item.text || "");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const save = async () => {
+    if (!body.trim() || busy) return;
+    setBusy(true); setErr("");
+    const ok = await onSave(title.trim(), body.trim());
+    setBusy(false);
+    if (ok) onClose(); else setErr("Could not save the change. Try again.");
+  };
+  return <Modal onClose={onClose} title={post ? "Edit forum post" : "Edit reply"}>
+    {post && <>
+      <label style={S.label}>Title (optional)</label>
+      <input data-role="edit-title" style={S.input} value={title} onChange={(e) => setTitle(e.target.value)} maxLength={80} />
+    </>}
+    <label style={{ ...S.label, marginTop: post ? 10 : 0 }}>{post ? "What's happening?" : "Reply"}</label>
+    <textarea data-role="edit-body" style={{ ...S.input, minHeight: 90, resize: "vertical" }} value={body} onChange={(e) => setBody(e.target.value)} />
+    <p style={{ ...S.muted, marginTop: 8 }}>{item.anon ? "Posted anonymously — it stays anonymous." : "Posted as " + (item.authorName || "you") + "."}</p>
+    {err && <div style={S.error}>{err}</div>}
+    <button data-role="edit-save" style={{ ...S.primary, marginTop: 12, opacity: body.trim() ? 1 : .5 }} disabled={!body.trim() || busy} onClick={save}>{busy ? "Saving…" : "Save"}</button>
+  </Modal>;
 }
 
 function PostComposer({ me, onClose, onPost }) {

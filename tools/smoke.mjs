@@ -265,6 +265,25 @@ const newAccount = async () => (await post("/api/account/create", {})).json;
   const replyAdded = await post("/api/post/reply", { key: ownerKey, sessionId: ownerSid2, gid, postKey, text: "nice", anon: false });
   ok("a member can reply to a post", replyAdded.json && replyAdded.json.ok && replyAdded.json.post.replies.length === 1);
   const replyId = replyAdded.json.post.replies[0].id;
+  // Edits: author only, stamped `editedAt`, anonymity untouched, carried by delta reads.
+  const eb = { gid, postKey, title: "T2", text: "an edited forum post" };
+  ok("a post edit needs the session", (await post("/api/post/edit", { key: memberKey, ...eb })).json.error === "auth");
+  ok("a non-member cannot edit a post", (await post("/api/post/edit", { key: stranger.key, sessionId: stranger.sessionId, ...eb })).json.error === "not-member");
+  ok("only the author can edit a post (not even the owner)", (await post("/api/post/edit", { key: ownerKey, sessionId: ownerSid2, ...eb })).json.error === "forbidden");
+  ok("an edit cannot empty a post", (await post("/api/post/edit", { key: memberKey, sessionId: memberSid, ...eb, text: "  " })).json.error === "empty");
+  const postEdited = await post("/api/post/edit", { key: memberKey, sessionId: memberSid, ...eb });
+  ok("the author can edit their post", postEdited.json && postEdited.json.ok && postEdited.json.post.text === "an edited forum post" && postEdited.json.post.title === "T2" && postEdited.json.post.editedAt > 0 && postEdited.json.post.author === memberKey && postEdited.json.post.anon === false, postEdited.json);
+  const afterPostEdit = await get(`/api/mget?prefix=${encodeURIComponent(`post:${gid}:`)}&since=${postEdited.json.post.editedAt - 1}`);
+  ok("an edited post comes through a delta read", afterPostEdit.json.items.some(([k, v]) => k === postKey && v.text === "an edited forum post"));
+  const unchanged = await post("/api/post/edit", { key: memberKey, sessionId: memberSid, ...eb });
+  ok("saving without a change keeps the same edit time", unchanged.json.post.editedAt === postEdited.json.post.editedAt);
+  const rb = { gid, postKey, replyId, text: "nice, edited" };
+  ok("a non-member cannot edit a reply", (await post("/api/post/editReply", { key: stranger.key, sessionId: stranger.sessionId, ...rb })).json.error === "not-member");
+  ok("only the reply's author can edit it (not even the post's author)", (await post("/api/post/editReply", { key: memberKey, sessionId: memberSid, ...rb })).json.error === "forbidden");
+  ok("an edit cannot empty a reply", (await post("/api/post/editReply", { key: ownerKey, sessionId: ownerSid2, ...rb, text: "" })).json.error === "empty");
+  const replyEdited = await post("/api/post/editReply", { key: ownerKey, sessionId: ownerSid2, ...rb });
+  ok("the reply's author can edit it", replyEdited.json && replyEdited.json.ok && replyEdited.json.post.replies[0].text === "nice, edited" && replyEdited.json.post.replies[0].editedAt > 0, replyEdited.json);
+  ok("an unknown reply is not found", (await post("/api/post/editReply", { key: ownerKey, sessionId: ownerSid2, ...rb, replyId: "nope" })).json.error === "not-found");
   const strangerReplyDelete = await post("/api/post/deleteReply", { key: stranger.key, sessionId: stranger.sessionId, gid, postKey, replyId });
   ok("a non-member cannot delete a post reply", strangerReplyDelete.json && strangerReplyDelete.json.error === "not-member");
   // Reply deletion follows the message rule: its author, or a group admin.

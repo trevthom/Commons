@@ -591,6 +591,46 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
+  // Editing mirrors /api/message/edit: only the author (admins may delete, never
+  // rewrite), anonymity and authorship stay as they were, `editedAt` marks the
+  // change and `updatedAt` hands it to the delta polls.
+  if (p === "/api/post/edit" && req.method === "POST") {
+    const body = await readBody(req);
+    const key = normKey(body.key); const sessionId = body.sessionId; const gid = String(body.gid || ""); const postKey = String(body.postKey || "");
+    const title = String(body.title || "").trim().slice(0, 80);
+    const text = String(body.text || "").trim().slice(0, 4000);
+    return atomic(() => {
+      if (!sessionOk(key, sessionId)) return sendJSON(res, 200, { ok: false, error: "auth" });
+      const g = store[groupKey(gid)];
+      if (!g || !g.members[key]) return sendJSON(res, 200, { ok: false, error: "not-member" });
+      if (!postKey.startsWith(`post:${gid}:`) || !store[postKey]) return sendJSON(res, 200, { ok: false, error: "not-found" });
+      const po = store[postKey];
+      if (po.author !== key) return sendJSON(res, 200, { ok: false, error: "forbidden" });
+      if (!text) return sendJSON(res, 200, { ok: false, error: "empty" });
+      if (text !== po.text || title !== (po.title || "")) { po.title = title; po.text = text; po.editedAt = now(); po.updatedAt = po.editedAt; persist(); }
+      sendJSON(res, 200, { ok: true, key: postKey, post: po });
+    });
+  }
+  if (p === "/api/post/editReply" && req.method === "POST") {
+    const body = await readBody(req);
+    const key = normKey(body.key); const sessionId = body.sessionId; const gid = String(body.gid || "");
+    const postKey = String(body.postKey || ""); const replyId = String(body.replyId || "");
+    const text = String(body.text || "").trim().slice(0, 4000);
+    return atomic(() => {
+      if (!sessionOk(key, sessionId)) return sendJSON(res, 200, { ok: false, error: "auth" });
+      const g = store[groupKey(gid)];
+      if (!g || !g.members[key]) return sendJSON(res, 200, { ok: false, error: "not-member" });
+      if (!postKey.startsWith(`post:${gid}:`) || !store[postKey]) return sendJSON(res, 200, { ok: false, error: "not-found" });
+      const po = store[postKey];
+      const reply = (po.replies || []).find((r) => r.id === replyId);
+      if (!reply) return sendJSON(res, 200, { ok: false, error: "not-found" });
+      if (reply.author !== key) return sendJSON(res, 200, { ok: false, error: "forbidden" });
+      if (!text) return sendJSON(res, 200, { ok: false, error: "empty" });
+      if (text !== reply.text) { reply.text = text; reply.editedAt = now(); po.updatedAt = reply.editedAt; persist(); }
+      sendJSON(res, 200, { ok: true, key: postKey, post: po });
+    });
+  }
+
   if (p === "/api/post/delete" && req.method === "POST") {
     const body = await readBody(req);
     const key = normKey(body.key); const sessionId = body.sessionId; const gid = String(body.gid || ""); const postKey = String(body.postKey || "");

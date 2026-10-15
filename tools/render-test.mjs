@@ -709,6 +709,46 @@ const myPost = [...document.querySelectorAll("#root .reveal")].find((d) => (d.te
 const myPostStamp = myPost && myPost.querySelector('[data-role="msg-stamp"]');
 check("a forum post carries the Eastern timestamp", !!myPostStamp && /EST$/.test((myPostStamp.textContent || "").trim()), myPostStamp ? myPostStamp.textContent : "no stamp");
 
+// --- editing your own forum post and reply, like General chat ---
+{
+  const cardWith = (t) => [...document.querySelectorAll("#root .reveal")].find((d) => (d.textContent || "").includes(t));
+  const editBtn = myPost.querySelector('[data-role="post-edit"]');
+  check("your own post has an edit button, next to delete", !!editBtn && editBtn.title === "Edit post" && editBtn.nextElementSibling === myPost.querySelector('[data-role="post-delete"]'));
+  check("an unedited post carries no edited mark", !myPost.querySelector('[data-role="edited"]'));
+  editBtn.click();
+  await sleep(300);
+  const tEl = document.querySelector('[data-role="edit-title"]'), bEl = document.querySelector('[data-role="edit-body"]');
+  check("the edit sheet loads the post's title and text", !!modal() && /Edit forum post/.test(modal().textContent) && tEl.value === "Stamp check" && bEl.value === "forum stamp check", tEl ? tEl.value + " / " + (bEl && bEl.value) : "no sheet");
+  setInput(bEl, "   ");
+  await sleep(100);
+  check("an empty post cannot be saved", document.querySelector('[data-role="edit-save"]').disabled);
+  setInput(tEl, "Stamp check 2");
+  setInput(bEl, "forum stamp check edited");
+  document.querySelector('[data-role="edit-save"]').click();
+  await sleep(1500);
+  const edited = cardWith("forum stamp check edited");
+  check("saving closes the sheet and shows the new text and title", !modal() && !!edited && /Stamp check 2/.test(edited.textContent));
+  check("an edited post is marked edited", !!edited && !!edited.querySelector('[data-role="edited"]') && /edited/.test(edited.querySelector('[data-role="msg-stamp"]').textContent));
+  // a reply of your own can be edited too
+  [...edited.querySelectorAll("button")].find((b) => /repl/.test(b.textContent)).click();
+  await sleep(200);
+  const rIn = inputByPlaceholder("Add a reply…", edited);
+  setInput(rIn, "my first reply");
+  rIn.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  await sleep(1500);
+  const withReply = cardWith("my first reply");
+  const rEdit = withReply && withReply.querySelector('[data-role="reply-edit"]');
+  check("your own reply has an edit button", !!rEdit && rEdit.title === "Edit reply");
+  rEdit.click();
+  await sleep(300);
+  check("the reply sheet has no title field", !!modal() && /Edit reply/.test(modal().textContent) && !document.querySelector('[data-role="edit-title"]') && document.querySelector('[data-role="edit-body"]').value === "my first reply");
+  setInput(document.querySelector('[data-role="edit-body"]'), "my edited reply");
+  document.querySelector('[data-role="edit-save"]').click();
+  await sleep(1500);
+  const rCard = cardWith("my edited reply");
+  check("an edited reply shows its new text and is marked edited", !modal() && !!rCard && rCard.querySelectorAll('[data-role="edited"]').length === 2 /* the post and the reply */ && !/my first reply/.test(rCard.textContent));
+}
+
 // --- coming back from the Forum must land on the newest message ---
 check("switched back to General", click("General"));
 await sleep(900);
