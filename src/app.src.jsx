@@ -712,6 +712,9 @@ function Composer({ me, onSend, placeholder, editing, uploadImage, onPoll }) {
   const [text, setText] = useState("");
   const [anonOverride, setAnonOverride] = useState(null);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  // The + button at the left opens a vertical list of what else a message can
+  // carry (anonymity, emoji, a picture, a poll); tapping + again folds it.
+  const [menuOpen, setMenuOpen] = useState(false);
   const [attach, setAttach] = useState(null); // { file, previewUrl, promise, done }
   const [attachErr, setAttachErr] = useState("");
   const [sending, setSending] = useState(false);
@@ -781,7 +784,7 @@ function Composer({ me, onSend, placeholder, editing, uploadImage, onPoll }) {
     if (attach && !editing) {
       if (sending) return;
       const job = attach;
-      setSending(true); setEmojiOpen(false); setAttachErr("");
+      setSending(true); setEmojiOpen(false); setMenuOpen(false); setAttachErr("");
       if (job.done && !job.done.ok) upload(job); // a failed upload retries on send
       let r = await job.promise;
       let res = r && r.ok ? await onSend(caption, anon, r.imageId) : (r && r.error) || false;
@@ -794,7 +797,7 @@ function Composer({ me, onSend, placeholder, editing, uploadImage, onPoll }) {
     }
     // An edit may empty a picture's caption, but never a text message.
     if (!caption && !(editing && editing.image)) return;
-    onSend(caption, anon); setBox(""); setEmojiOpen(false);
+    onSend(caption, anon); setBox(""); setEmojiOpen(false); setMenuOpen(false);
   };
   const pickImage = (e) => {
     const file = e.target.files && e.target.files[0];
@@ -839,6 +842,12 @@ function Composer({ me, onSend, placeholder, editing, uploadImage, onPoll }) {
     document.addEventListener("click", close);
     return () => document.removeEventListener("click", close);
   }, [emojiOpen]);
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = () => setMenuOpen(false);
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  }, [menuOpen]);
   return <>{attach && !editing && <div data-role="attach-bar" style={S.attachBar}>
     <img src={attach.previewUrl} alt="Picture to send" style={S.attachThumb} />
     <div style={{ flex: 1, minWidth: 0, fontSize: 13, color: attachErr ? "#f87171" : MUTED }}>{attachErr || (sending ? "Sending…" : "")}</div>
@@ -848,14 +857,24 @@ function Composer({ me, onSend, placeholder, editing, uploadImage, onPoll }) {
     {emojiOpen && <div data-role="emoji-panel" style={S.emojiPanel} onClick={(e) => e.stopPropagation()}>
       {EMOJI.map((e) => <button key={e} style={S.emojiBtn} onMouseDown={(ev) => ev.preventDefault()} onClick={() => insertText(e)}>{e}</button>)}
     </div>}
-    <div style={S.composerTools}>
-      <button style={{ ...S.composerIcon, color: anon ? ACCENT : "#9fb0bd", ...(editing ? { opacity: .35, cursor: "default" } : {}) }} disabled={!!editing}
-        title={editing ? "An edit keeps the message's name" : anon ? "Sending anonymously" : "Sending as " + me.username} onClick={() => setAnonOverride(!anon)}>{anon ? <EyeOff size={18} /> : <Eye size={18} />}</button>
-      <button style={{ ...S.composerIcon, color: emojiOpen ? ACCENT : "#9fb0bd" }} title="Emoji" onMouseDown={(ev) => ev.preventDefault()} onClick={(e) => { e.stopPropagation(); setEmojiOpen((v) => !v); }}><Smile size={18} /></button>
-      {allowImage && !editing && <button style={{ ...S.composerIcon, color: attach ? ACCENT : "#9fb0bd" }} title="Send a picture" onClick={() => fileRef.current && fileRef.current.click()}><ImagePlus size={18} /></button>}
-      {allowImage && <input ref={fileRef} type="file" accept="image/*" data-role="image-input" style={{ display: "none" }} onChange={pickImage} />}
-      {onPoll && !editing && <button style={{ ...S.composerIcon, color: "#9fb0bd" }} title="Create a poll" onMouseDown={(ev) => ev.preventDefault()} onClick={onPoll}><BarChart3 size={18} /></button>}
-    </div>
+    {allowImage && <input ref={fileRef} type="file" accept="image/*" data-role="image-input" style={{ display: "none" }} onChange={pickImage} />}
+    {menuOpen && <div data-role="composer-menu" style={S.composerMenu} onClick={(e) => e.stopPropagation()}>
+      {/* Rows keep the box focused (mouse-down is cancelled), so the phone
+          keyboard stays up. Anonymity stays open to show its new state. */}
+      <button data-role="composer-menu-item" style={{ ...S.menuItem, ...(editing ? { opacity: .4, cursor: "default" } : {}) }} disabled={!!editing} onMouseDown={(ev) => ev.preventDefault()}
+        title={editing ? "An edit keeps the message's name" : anon ? "Sending anonymously" : "Sending as " + me.username} onClick={() => setAnonOverride(!anon)}>
+        {anon ? <EyeOff size={18} color={ACCENT} /> : <Eye size={18} />}<span style={{ flex: 1 }}>Anonymous</span>
+        <span style={{ ...S.pill, background: anon ? "#2dd4bf22" : "#ffffff14", color: anon ? ACCENT : "#9fb0bd" }}>{anon ? "ON" : "OFF"}</span>
+      </button>
+      <button data-role="composer-menu-item" style={S.menuItem} title="Emoji" onMouseDown={(ev) => ev.preventDefault()} onClick={() => { setMenuOpen(false); setEmojiOpen(true); }}><Smile size={18} /><span>Emoji</span></button>
+      {allowImage && !editing && <button data-role="composer-menu-item" style={S.menuItem} title="Send a picture" onMouseDown={(ev) => ev.preventDefault()} onClick={() => { setMenuOpen(false); fileRef.current && fileRef.current.click(); }}><ImagePlus size={18} /><span>Picture</span></button>}
+      {onPoll && !editing && <button data-role="composer-menu-item" style={S.menuItem} title="Create a poll" onMouseDown={(ev) => ev.preventDefault()} onClick={() => { setMenuOpen(false); onPoll(); }}><BarChart3 size={18} /><span>Poll</span></button>}
+    </div>}
+    <button data-role="composer-plus" data-open={menuOpen ? "1" : "0"} style={{ ...S.composerPlus, ...(anon && !editing ? { borderColor: ACCENT, color: ACCENT } : {}) }}
+      title={menuOpen ? "Close options" : "More options"} onMouseDown={(ev) => ev.preventDefault()} onClick={(e) => { e.stopPropagation(); setEmojiOpen(false); setMenuOpen((v) => !v); }}>
+      <Plus size={20} style={{ transform: menuOpen ? "rotate(45deg)" : "none", transition: "transform .15s ease" }} />
+      {anon && !editing && <span data-role="anon-badge" style={S.anonBadge}><EyeOff size={9} /></span>}
+    </button>
     <div ref={inputRef} contentEditable suppressContentEditableWarning role="textbox" aria-multiline="true" aria-label={placeholder}
       data-role="composer-input" data-placeholder={placeholder} data-empty={text ? "0" : "1"} style={S.composerInput}
       onInput={sync} onPaste={onPaste} onDrop={onDrop}
@@ -1640,8 +1659,10 @@ const S = {
   segBtnActive: { background: PANEL, color: TEXT },
   // Bottom-aligned, so the icons and send button stay put while the box grows upward.
   composer: { position: "relative", display: "flex", gap: 8, padding: "10px 12px 10px 8px", borderTop: `1px solid ${LINE}`, background: PANEL, alignItems: "flex-end" },
-  composerTools: { display: "flex", alignItems: "center", gap: 7, marginBottom: 6, flexShrink: 0 },
-  composerIcon: { background: "transparent", border: "none", cursor: "pointer", padding: 5, borderRadius: 8, display: "flex" },
+  // A circle at the left of the box, bottom-aligned with it (the row grows upward).
+  composerPlus: { position: "relative", flexShrink: 0, width: 36, height: 36, marginBottom: 2, borderRadius: "50%", background: PANEL2, border: `1px solid ${LINE}`, color: "#9fb0bd", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 },
+  anonBadge: { position: "absolute", top: -3, right: -3, width: 15, height: 15, borderRadius: "50%", background: ACCENT, color: "#04201d", display: "flex", alignItems: "center", justifyContent: "center" },
+  composerMenu: { position: "absolute", left: 8, bottom: "calc(100% + 4px)", zIndex: 40, minWidth: 210, background: "#0f1620", border: `1px solid ${LINE}`, borderRadius: 14, padding: 4, boxShadow: "0 12px 32px rgba(0,0,0,.55)", display: "flex", flexDirection: "column" },
   emojiPanel: { position: "absolute", bottom: "calc(100% + 4px)", left: 8, right: 8, zIndex: 40, display: "grid", gridTemplateColumns: "repeat(8, 1fr)", gap: 2, padding: 8, background: "#0f1620", border: `1px solid ${LINE}`, borderRadius: 14, boxShadow: "0 12px 32px rgba(0,0,0,.55)", maxHeight: 200, overflowY: "auto" },
   emojiBtn: { background: "transparent", border: "none", cursor: "pointer", fontSize: 20, lineHeight: 1, padding: 4, borderRadius: 8, fontFamily: "inherit" },
   pinBar: { display: "flex", alignItems: "center", gap: 9, width: "100%", textAlign: "left", padding: "8px 14px", background: "#0f1620", border: "none", borderBottom: `1px solid ${LINE}`, color: TEXT, cursor: "pointer", fontFamily: "inherit" },

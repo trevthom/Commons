@@ -130,7 +130,27 @@ check("the room header shows the member count", !!memberCountEl && /^1 member$/.
 const nameControl = [...document.querySelectorAll("button")].find((b) => b.title === "Change your username");
 check("the header reads '<username> ✎ · owner'", !!nameControl && (nameControl.textContent || "").includes("tester ✎ · owner"), nameControl ? nameControl.textContent : "missing");
 check("the header anonymous toggle is gone", !titled("Posting anonymously by default") && !titled("Posting with your username"));
-check("the per-message anonymous toggle remains", titled("Sending as tester"));
+// The message box's extras live behind a + button at its left.
+const plusBtn = () => document.querySelector('[data-role="composer-plus"]');
+const plusMenu = () => document.querySelector('[data-role="composer-menu"]');
+const togglePlus = async () => { plusBtn().click(); await sleep(150); };
+check("a + button sits at the left of the message box", !!plusBtn() && plusBtn().nextElementSibling === document.querySelector('[data-role="composer-input"]'));
+check("the icons are hidden until + is tapped", !plusMenu() && !titled("Emoji") && !titled("Send a picture") && !titled("Create a poll") && !titled("Sending as tester"));
+await togglePlus();
+{
+  const rows = [...plusMenu().querySelectorAll('[data-role="composer-menu-item"]')];
+  check("tapping + lists the options vertically with their names", rows.length === 4 && rows.every((r) => r.querySelector("svg")) &&
+    ["Anonymous", "Emoji", "Picture", "Poll"].every((t, i) => (rows[i].textContent || "").includes(t)), rows.map((r) => r.textContent).join(" | "));
+  check("the per-message anonymous toggle remains", titled("Sending as tester") && /OFF/.test(rows[0].textContent));
+  rows[0].click();
+  await sleep(150);
+  check("the anonymous row turns on and the + shows it", /ON/.test(plusMenu().textContent) && titled("Sending anonymously") && !!document.querySelector('[data-role="anon-badge"]'));
+  rows[0].click();
+  await sleep(150);
+  check("and turns off again", /OFF/.test(plusMenu().textContent) && !document.querySelector('[data-role="anon-badge"]'));
+}
+await togglePlus();
+check("tapping + again collapses the list", !plusMenu() && !titled("Emoji"));
 check("search is hidden until its icon is tapped", !inputByPlaceholder("Search all messages") && titled("Search messages"));
 const searchIcon = document.querySelector('[title="Search messages"]');
 const settingsIcon = document.querySelector('[title="Settings"]');
@@ -197,9 +217,10 @@ check("an empty result explains itself", /No messages match/.test(screen()));
 // --- emoji picker ---
 setInput(inputByPlaceholder("Search all messages"), "");
 await sleep(300);
+await togglePlus();
 document.querySelector('[title="Emoji"]').click();
 await sleep(250);
-check("the emoji picker opens", !!document.querySelector('[data-role="emoji-panel"]'));
+check("the emoji picker opens and the list closes", !!document.querySelector('[data-role="emoji-panel"]') && !plusMenu());
 const fireBtn = [...document.querySelectorAll("button")].find((b) => b.textContent === "🔥");
 check("the palette renders emoji", !!fireBtn);
 fireBtn.click();
@@ -243,7 +264,9 @@ check("an edited message is marked edited", !!editedRow && !!editedRow.querySele
 check("an unedited message carries no edited mark", !optsFor("banana bread").parentElement.parentElement.querySelector('[data-role="edited"]'));
 
 // --- pictures: a picture button, a thumbnail in the bubble, a full-screen view ---
-check("the message box has a picture button", titled("Send a picture") && !!document.querySelector('[data-role="image-input"]'));
+await togglePlus();
+check("the + list has a picture row, and the file input exists", titled("Send a picture") && !!document.querySelector('[data-role="image-input"]'));
+await togglePlus();
 check("the 30-day note is gone from the chat", !document.querySelector('[data-role="retention-note"]') && !/deleted 30 days after/.test(screen()));
 {
   // A picture pasted (or put in by a keyboard) is attached, never inserted as markup.
@@ -288,9 +311,11 @@ await sleep(200);
 check("tapping the full-screen picture closes it", !document.querySelector('[data-role="lightbox"]'));
 
 // --- polls: a poll button, a sheet, options to vote on ---
-check("the message box has a poll button", titled("Create a poll"));
+await togglePlus();
+check("the + list has a poll row", titled("Create a poll"));
 document.querySelector('[title="Create a poll"]').click();
 await sleep(300);
+check("choosing Poll closes the list and opens the sheet", !plusMenu() && !!modal());
 const submitPoll = () => document.querySelector('[data-role="poll-submit"]');
 check("the poll sheet opens with Post disabled", !!modal() && submitPoll().disabled);
 setInput(document.querySelector('[data-role="poll-question"]'), "Pizza or tacos?");
