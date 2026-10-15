@@ -62,6 +62,10 @@ Open the app in a browser, or install it as a PWA on a phone.
 
 **Forum**
 - Posts with an optional title, plus threaded replies.
+- **Edit your own posts and replies** with the pencil beside the trash can. You
+  can change a post's title and text, or a reply's text; the name (or
+  anonymity) it was posted with stays as it was. An edited post or reply shows
+  "edited" beside its time. Only the author can edit; admins can still delete.
 - Compose as yourself or anonymously, per post.
 
 **Anonymity**
